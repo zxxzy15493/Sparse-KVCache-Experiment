@@ -1,12 +1,12 @@
-# Anonymous Artifact Repository
+# Sparse-KVCache Experiment Repository
 
-This repository contains the code and experimental artifacts prepared for an anonymous double-blind review. To preserve anonymity, it contains no author, institutional, or machine-specific information.
+This repository contains the code and experimental artifacts for a systematic empirical study of KV cache optimization via sparse attention in long-context LLM inference. It provides a unified framework for comparing 18 representative sparse-attention and KV-cache methods, covering eviction-based KV cache management, heuristic-based retrieval, ANN-based retrieval, and pattern allocation. The repository includes method implementations, unified loaders and inference entry points, per-method configuration files, benchmark prediction and evaluation scripts, recall-analysis resources, environment and data-preparation instructions, and method-specific experiment guides.
 
 ## Changelog
 
 | Date | Update |
 | --- | --- |
-| 20260723 | Uploaded the initial code. |
+| 20260727 | Uploaded the initial code. |
 |  |  |
 
 ## Supported Methods and Models
