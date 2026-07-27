@@ -1,0 +1,10 @@
+{
+    "mistral-7b-Instruct-32k": "mistralai/Mistral-7B-Instruct-v0.2",
+    "llama-3.1": "meta-llama/Llama-3.1-8B-Instruct",
+    "llama-3.1-8b": "meta-llama/Llama-3.1-8B-Instruct",
+    "llama-3.2": "meta-llama/Llama-3.2-1B-Instruct",
+    "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen-2.5-7b-1m": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "glm-9b": "zai-org/glm-4-9b-chat-1m",
+    "chatglm": "zai-org/glm-4-9b-chat-1m"
+}

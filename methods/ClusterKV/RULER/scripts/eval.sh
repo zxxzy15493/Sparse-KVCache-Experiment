@@ -1,0 +1,1 @@
+ python eval/evaluate.py --data_dir benchmark_root/llama3.1-8b-full/synthetic/32768/pred --benchmark synthetic

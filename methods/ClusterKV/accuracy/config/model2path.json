@@ -1,0 +1,12 @@
+{
+    "llama3-8b-chat-4k": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "llama3-8b-chat-8k": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "llama3.1-8b-chat-4k": "meta-llama/Llama-3.1-8B-Instruct",
+    "llama3.1-8b-chat-8k": "meta-llama/Llama-3.1-8B-Instruct",
+    "llama3.1-8b-chat-32k": "meta-llama/Llama-3.1-8B-Instruct",
+    "qwen2.5-7b-chat-32k": "Qwen/Qwen2.5-7B-Instruct",
+    "glm4-9b-chat-4k": "zai-org/glm-4-9b-chat-1m",
+    "glm4-9b-chat-8k": "zai-org/glm-4-9b-chat-1m",
+    "glm4-9b-chat-32k": "zai-org/glm-4-9b-chat-1m",
+    "glm4-9b-chat-1m": "zai-org/glm-4-9b-chat-1m"
+}

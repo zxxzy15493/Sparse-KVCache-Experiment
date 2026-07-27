@@ -1,0 +1,9 @@
+{
+    "llama2-7b-chat-4k": "meta-llama/Llama-2-7b-chat-hf",
+    "llama2-13b-chat-4k": "meta-llama/Llama-2-13b-chat-hf",
+    "llama3.1-8b-128k": "meta-llama/Llama-3.1-8B-Instruct",
+    "mistral-0.3-7b-32k": "mistralai/Mistral-7B-Instruct-v0.3",
+    "qwen2.5-7b-instruct": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen2.5-7b-instruct-1m": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "glm-4-9b-chat-1m": "THUDM/glm-4-9b-chat-1m"
+}

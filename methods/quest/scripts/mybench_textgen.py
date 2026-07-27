@@ -1,0 +1,345 @@
+import argparse
+import gc
+import json
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+from tqdm import tqdm
+from transformers import AutoTokenizer
+
+from quest.models.myllama import LlamaForCausalLM
+from quest.models.qwen2 import Qwen2ForCausalLM
+
+
+def load_prompt_from_file(file_path: str) -> str:
+  """Read arbitrary text file as prompt."""
+  assert os.path.exists(file_path), f"Input file not found: {file_path}"
+  encodings_to_try = ["utf-8", "utf-8-sig", "gb18030"]
+  for enc in encodings_to_try:
+    try:
+      with open(file_path, "r", encoding=enc) as f:
+        return f.read()
+    except UnicodeDecodeError:
+      continue
+  with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+    return f.read()
+
+
+def build_chat_prompt(tokenizer, prompt: str, model_name: str = "") -> str:
+  """Wrap prompt with chat template."""
+  try:
+    prompt = tokenizer.apply_chat_template(
+      [{"role": "user", "content": prompt}],
+      add_generation_prompt=True,
+      tokenize=False,
+    )
+  except Exception:
+    pass
+  return prompt
+
+
+def load_model(model_path: str, dtype: torch.dtype, device: torch.device, model_type: str):
+  """Load model using Quest's own loader (Llama / Qwen2)."""
+  torch.set_default_dtype(dtype)
+  with device:
+    if model_type == "llama":
+      model = LlamaForCausalLM.from_pretrained(
+        model_path,
+        device_map=device,
+        torch_dtype=dtype,
+      )
+    elif model_type == "qwen2":
+      model = Qwen2ForCausalLM.from_pretrained(
+        model_path,
+        device_map=device,
+        torch_dtype=dtype,
+      )
+    else:
+      raise ValueError(f"Unknown model_type: {model_type}")
+  model.eval()
+  return model
+
+
+@torch.inference_mode()
+def benchmark_latency(
+  model,
+  tokenizer,
+  prompt: str,
+  seqlen: int,
+  max_new_tokens: int,
+):
+  """Token-by-token decode, measuring per-step latency (including prefill)."""
+  inputs = tokenizer(prompt, truncation=True, max_length=seqlen, return_tensors="pt")
+  input_ids = inputs.input_ids.to(model.device)
+  in_len = input_ids.shape[-1]
+
+  decode_latency = []
+  current_input_ids = input_ids
+  past_key_values = None
+
+  for i in range(max_new_tokens):
+    torch.cuda.synchronize()
+    start_ts = time.perf_counter()
+
+    outputs = model(
+      input_ids=current_input_ids,
+      past_key_values=past_key_values,
+      use_cache=True,
+      num_logits_to_keep=1 if i == 0 else None,
+    )
+
+    past_key_values = outputs.past_key_values
+    next_token_id = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(-1)
+
+    torch.cuda.synchronize()
+    decode_latency.append(time.perf_counter() - start_ts)
+    current_input_ids = next_token_id
+
+  ttft = decode_latency[0]
+  tpot = np.mean(decode_latency[1:]) if len(decode_latency) > 1 else 0.0 # Time Per Output Token
+  total_latency = sum(decode_latency)
+  decode_time = sum(decode_latency[1:]) if len(decode_latency) > 1 else 0.0
+
+  return {
+    "in_len": in_len,
+    "seqlen_limit": seqlen,
+    "max_new_tokens": max_new_tokens,
+    "ttft_s": ttft,
+    "tpot_ms": tpot * 1000,
+    "total_latency_s": total_latency,
+    "decode_time_s": decode_time,
+    "generated_tokens": len(decode_latency),
+    "decode_latency_list": decode_latency,
+  }
+
+
+@torch.inference_mode()
+def benchmark_ttft(
+  model,
+  tokenizer,
+  prompt: str,
+  seqlen: int,
+  max_new_tokens: int,
+):
+  """Measure TTFT using model.generate()."""
+  inputs = tokenizer(prompt, truncation=True, max_length=seqlen, return_tensors="pt")
+  inputs = {k: v.to(model.device) for k, v in inputs.items()}
+  context_len = inputs["input_ids"].shape[-1]
+
+  torch.cuda.synchronize()
+  t0 = time.perf_counter()
+
+  output_ids = model.generate(
+    **inputs,
+    max_new_tokens=max_new_tokens,
+    num_beams=1,
+    do_sample=False,
+    temperature=1.0,
+    top_p=1.0,
+    top_k=0,
+    pad_token_id=tokenizer.eos_token_id,
+  )[0]
+
+  torch.cuda.synchronize()
+  elapsed_ms = (time.perf_counter() - t0) * 1000
+
+  gen_ids = output_ids[context_len:]
+  generated_tokens = len(gen_ids)
+  pred_text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+
+  return {
+    "in_len": context_len,
+    "seqlen_limit": seqlen,
+    "max_new_tokens": max_new_tokens,
+    "ttft_ms": elapsed_ms,
+    "generated_tokens": generated_tokens,
+    "prediction": pred_text,
+  }
+
+
+@torch.inference_mode()
+def benchmark_throughput(
+  model,
+  tokenizer,
+  prompt: str,
+  seqlen: int,
+  max_new_tokens: int,
+):
+  """Measure throughput using model.generate()."""
+  inputs = tokenizer(prompt, truncation=True, max_length=seqlen, return_tensors="pt")
+  inputs = {k: v.to(model.device) for k, v in inputs.items()}
+  context_len = inputs["input_ids"].shape[-1]
+
+  start_ev = torch.cuda.Event(enable_timing=True)
+  end_ev = torch.cuda.Event(enable_timing=True)
+
+  torch.cuda.synchronize()
+  start_ev.record()
+
+  output_ids = model.generate(
+    **inputs,
+    max_new_tokens=max_new_tokens,
+    num_beams=1,
+    do_sample=False,
+    temperature=1.0,
+    top_p=1.0,
+    top_k=0,
+    pad_token_id=tokenizer.eos_token_id,
+  )[0]
+
+  end_ev.record()
+  torch.cuda.synchronize()
+  elapsed_ms = start_ev.elapsed_time(end_ev)
+
+  gen_ids = output_ids[context_len:]
+  generated_tokens = len(gen_ids)
+  throughput_tokens_per_sec = generated_tokens / (elapsed_ms / 1000.0) if elapsed_ms > 0 else 0
+
+  return {
+    "in_len": context_len,
+    "seqlen_limit": seqlen,
+    "max_new_tokens": max_new_tokens,
+    "total_time_ms": elapsed_ms,
+    "generated_tokens": generated_tokens,
+    "throughput_tokens_per_sec": throughput_tokens_per_sec,
+  }
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Quest Kernel Efficiency Benchmark on Arbitrary Text")
+  parser.add_argument("--model_type", type=str, default="llama", choices=["llama", "qwen2"],
+            help="Model architecture: llama or qwen2")
+  parser.add_argument("--model_path", type=str, required=True, help="Model path")
+  parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float16", "bfloat16"])
+  parser.add_argument("--bench_type", type=str, required=True,
+            choices=["TTFT", "LATENCY", "THROUGHPUT"],
+            help="TTFT=first token latency (generate), LATENCY=per-step latency, THROUGHPUT=tokens/sec")
+  parser.add_argument("--dataset_path", type=str, required=True, help="Input text file path")
+  parser.add_argument("--seqlen", type=int, default=4096, help="Prefill truncation length")
+  parser.add_argument("--max_new_tokens", type=int, default=128, help="Max new tokens to generate")
+  parser.add_argument("--page_size", type=int, default=16, help="Quest page size")
+  parser.add_argument("--token_budget", type=int, default=256, help="Quest token budget")
+  parser.add_argument("--iteration", type=int, default=1, help="Number of iterations (averaged)")
+  parser.add_argument("--output_dir", type=Path, default=Path("bench_results"),
+            help="Output directory for results")
+  parser.add_argument("--model_name", type=str, default="Llama",
+            help="Short model name for output filenames")
+  parser.add_argument("--chat_template", action="store_true", help="Whether to apply chat template")
+
+  args = parser.parse_args()
+
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  assert torch.cuda.is_available(), "Quest kernel requires CUDA"
+
+  dtype = getattr(torch, args.dtype)
+
+  max_seq_len = args.seqlen + args.max_new_tokens + 512
+  page_size = args.page_size
+  token_budget = args.token_budget
+
+  prompt_text = load_prompt_from_file(args.dataset_path)
+
+  prompt_file_stem = Path(args.dataset_path).stem
+  suffix = f"{args.model_name}-budget{token_budget}-chunk_size{page_size}-seqlen{args.seqlen}"
+  output_dir = args.output_dir
+  output_dir.mkdir(parents=True, exist_ok=True)
+  out_path = output_dir / f"{suffix}.jsonl"
+
+  print(f"Loading model from {args.model_path} ...")
+  model = load_model(args.model_path, dtype, device, args.model_type)
+  tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+  if tokenizer.pad_token_id is None:
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+  quest_dtype = torch.float16 if dtype == torch.bfloat16 else dtype
+  if quest_dtype != dtype:
+    print(f"Quest kernels use {quest_dtype} while model weights stay in {dtype}.")
+
+  model.quest_init(
+    page_size=page_size,
+    max_seq_len=max_seq_len,
+    token_budget=token_budget,
+    dtype=quest_dtype,
+    device=device,
+  )
+
+  prompt = build_chat_prompt(tokenizer, prompt_text, args.model_name) if args.chat_template else prompt_text
+
+  print(f"Bench type: {args.bench_type}, seqlen={args.seqlen}, max_new_tokens={args.max_new_tokens}")
+  print(f"Prompt length (chars): {len(prompt)}")
+
+  results = []
+  for it in tqdm(range(args.iteration), desc=f"Bench={args.bench_type}"):
+    torch.cuda.empty_cache()
+
+    if args.bench_type == "LATENCY":
+      record = benchmark_latency(model, tokenizer, prompt, args.seqlen, args.max_new_tokens)
+    elif args.bench_type == "TTFT":
+      record = benchmark_ttft(model, tokenizer, prompt, args.seqlen, args.max_new_tokens)
+    elif args.bench_type == "THROUGHPUT":
+      record = benchmark_throughput(model, tokenizer, prompt, args.seqlen, args.max_new_tokens)
+
+    record["iteration"] = it
+    record["token_budget"] = token_budget
+    record["page_size"] = page_size
+    results.append(record)
+
+    model.quest_clear()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+  if args.bench_type == "LATENCY":
+    ttfts = [r["ttft_s"] for r in results]
+    tpots = [r["tpot_ms"] for r in results]
+    summary = {
+      "bench_type": args.bench_type,
+      "model": args.model_name,
+      "token_budget": token_budget,
+      "page_size": page_size,
+      "seqlen": args.seqlen,
+      "max_new_tokens": args.max_new_tokens,
+      "iterations": args.iteration,
+      "avg_ttft_s": np.mean(ttfts),
+      "avg_tpot_ms": np.mean(tpots),
+      "avg_total_latency_s": np.mean([r["total_latency_s"] for r in results]),
+    }
+  elif args.bench_type == "TTFT":
+    summary = {
+      "bench_type": args.bench_type,
+      "model": args.model_name,
+      "token_budget": token_budget,
+      "page_size": page_size,
+      "seqlen": args.seqlen,
+      "max_new_tokens": args.max_new_tokens,
+      "iterations": args.iteration,
+      "avg_ttft_ms": np.mean([r["ttft_ms"] for r in results]),
+    }
+  elif args.bench_type == "THROUGHPUT":
+    summary = {
+      "bench_type": args.bench_type,
+      "model": args.model_name,
+      "token_budget": token_budget,
+      "page_size": page_size,
+      "seqlen": args.seqlen,
+      "max_new_tokens": args.max_new_tokens,
+      "iterations": args.iteration,
+      "avg_throughput_tokens_per_sec": np.mean([r["throughput_tokens_per_sec"] for r in results]),
+    }
+
+  with open(out_path, "a", encoding="utf-8") as f:
+    json.dump(summary, f, ensure_ascii=False)
+    f.write("\n")
+    for r in results:
+      json.dump(r, f, ensure_ascii=False)
+      f.write("\n")
+
+  print("=" * 60)
+  print(f"Results saved to {out_path}")
+  print(json.dumps(summary, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+  main()

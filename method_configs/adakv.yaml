@@ -1,0 +1,4 @@
+budget: 1024
+window_size: 32
+kernel_size: 7
+pooling: maxpool

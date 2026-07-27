@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+XATTN_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
+DATA_ROOT_DEFAULT=$(cd -- "$XATTN_ROOT/../../benchmarks/ruler/benchmark_root" && pwd)
+
+cd "$XATTN_ROOT/eval/RULER/scripts"
+export PYTHONPATH="$XATTN_ROOT:${PYTHONPATH:-}"
+GPUS="${GPUS:-1}"
+ROOT_DIR="${ROOT_DIR:-$DATA_ROOT_DEFAULT}"
+MODEL_DIR="${MODEL_DIR:-}"
+ENGINE_DIR="${ENGINE_DIR:-.}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+
+source config_models.sh
+MODEL_NAME="qwen2.5-7b"
+
+MODEL_CONFIG=$(MODEL_SELECT ${MODEL_NAME} ${MODEL_DIR} ${ENGINE_DIR})
+IFS=":" read MODEL_PATH MODEL_TEMPLATE_TYPE MODEL_FRAMEWORK TOKENIZER_PATH TOKENIZER_TYPE OPENAI_API_KEY GEMINI_API_KEY AZURE_ID AZURE_SECRET AZURE_ENDPOINT <<< "$MODEL_CONFIG"
+if [ -z "${MODEL_PATH}" ]; then
+    echo "Model: ${MODEL_NAME} is not supported"
+    exit 1
+fi
+
+
+
+BENCHMARK="synthetic"
+METRIC="xattn" # Default: xattn
+MODEL_NAME="qwen2.5-7b"
+STRIDE=16
+
+PRINT_DETAIL=${PRINT_DETAIL:-""}
+
+THRESHOLD=${THRESHOLD:-""}
+
+MODEL_PATH="Qwen/Qwen2.5-7B-Instruct-1M"
+
+#TASKS="niah_single_1 niah_single_2 niah_single_3 niah_multikey_1 niah_multikey_2 niah_multikey_3 niah_multivalue niah_multiquery vt cwe fwe qa_1 qa_2"
+total_time=0
+TASKS="niah_single_1 niah_multiquery vt fwe"
+
+RES_DIR="${RES_DIR:-$XATTN_ROOT/output/ruler}"
+
+#for MAX_SEQ_LENGTH in 4096 8192 16384 32768 65536; do
+for MAX_SEQ_LENGTH in 131072; do
+
+
+    #RESULTS_DIR="${ROOT_DIR}/${SETTINGS_INFO}${MODEL_NAME}/${BENCHMARK}/${MAX_SEQ_LENGTH}"
+    data_DIR="${ROOT_DIR}/${MODEL_NAME}/${BENCHMARK}/${MAX_SEQ_LENGTH}"
+    pred_DIR="${RES_DIR}/${MODEL_NAME}/${BENCHMARK}/${MAX_SEQ_LENGTH}"
+
+    DATA_DIR="${data_DIR}/data"
+    PRED_DIR="${pred_DIR}/pred"
+    
+    mkdir -p ${DATA_DIR}
+    mkdir -p ${PRED_DIR}
+    
+    for TASK in ${TASKS}; do
+        python pred/qwen-call_api.py \
+            --data_dir ${DATA_DIR} \
+            --save_dir ${PRED_DIR} \
+            --benchmark ${BENCHMARK} \
+            --task ${TASK} \
+            --server_type ${MODEL_FRAMEWORK} \
+            --model_name_or_path ${MODEL_PATH} \
+            --temperature ${TEMPERATURE} \
+            --top_k ${TOP_K} \
+            --top_p ${TOP_P} \
+            --batch_size ${BATCH_SIZE} \
+            ${STOP_WORDS} \
+            --metric ${METRIC} \
+            ${THRESHOLD} \
+            --stride ${STRIDE} \
+            ${PRINT_DETAIL}
+        end_time=$(date +%s)
+        time_diff=$((end_time - start_time))
+        total_time=$((total_time + time_diff))
+    done
+    
+    python eval/evaluate.py \
+        --data_dir ${PRED_DIR} \
+        --benchmark ${BENCHMARK}
+done
+
+echo "Total time spent on call_api: $total_time seconds"

@@ -1,0 +1,6 @@
+budget: 1024
+fixbudget: true
+compressor: no_drop_lb_topp32
+recent_size: 0
+sink_size: 0
+fixthreshold: 0.9

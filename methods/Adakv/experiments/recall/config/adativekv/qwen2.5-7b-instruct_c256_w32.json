@@ -1,0 +1,10 @@
+{
+  "method": "adativekv",
+  "window_size": 32,
+  "kernel_size": 7,
+  "pooling": "maxpool",
+  "floor": 0.1,
+  "skip": 2,
+  "normalize": false,
+  "base_capacity": 256
+}

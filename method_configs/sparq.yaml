@@ -1,0 +1,6 @@
+budget: 1024
+k: 1024
+local_k: 32
+rank: 16
+score: sparse_q
+reallocate_to_mean_value: true

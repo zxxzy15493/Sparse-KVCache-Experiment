@@ -1,0 +1,5 @@
+budget: 1024
+window_size: 64
+kernel_size: 5
+pooling: avgpool
+pyram_beta: 20

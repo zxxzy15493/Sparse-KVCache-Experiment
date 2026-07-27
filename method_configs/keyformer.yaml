@@ -1,0 +1,4 @@
+key_size: 992
+recent_size: 32
+tau_init: 1.0
+tau_delta: 0.01

@@ -1,0 +1,110 @@
+import warnings
+warnings.filterwarnings("ignore")
+import argparse
+import json
+import os
+import time
+import random
+import numpy as np
+import torch
+from h2o import load
+from h2o_kv.enable_h2o import enable_h2o
+
+def build_chat(tokenizer, prompt, model_name):
+    messages = [{"role": "user", "content": prompt}]
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return prompt
+
+def build_output_path(model_name_or_path, out_len, budget):
+    model_dir_name = os.path.basename(model_name_or_path.rstrip("/"))
+    base_output = "./memory"
+    output_dir = os.path.join(base_output, f"budget{budget}", model_dir_name)
+    os.makedirs(output_dir, exist_ok=True)
+    file_name = f"out{out_len}.jsonl"
+    return os.path.join(output_dir, file_name)
+
+def seed_everything(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.cuda.manual_seed_all(seed)
+
+def main(args):
+    seed_everything(42)
+    model_key = args.model_name_or_path
+    model2path = json.load(open("config/model2path.json", "r"))
+    model_name_or_path = model_key
+    model, tokenizer = load(model_key, args)
+    
+    if args.enable_h2o_cache:
+        enable_h2o(model, args)
+
+    with open(args.data_root, "r", encoding="utf-8") as f:
+        raw_text = f.read().strip()
+    
+    input_ids_full = tokenizer(raw_text, return_tensors="pt").input_ids
+    
+    in_len = args.test_len
+    total_budget = args.heavy_hitter_size + args.recent_size
+    output_path = build_output_path(args.model_name_or_path, args.out_len, total_budget)
+
+    if in_len > input_ids_full.shape[1]:
+        print("Warning: test_len exceeds available text length.")
+        return
+
+    print(f"Run 1 - Input Length: {in_len}, Budget: {total_budget}")
+        
+    input_ids = input_ids_full[:, :in_len].to(model.device)
+    past_key_values = None
+    current_input_ids = input_ids
+
+    torch.cuda.memory.reset_peak_memory_stats()
+    if hasattr(torch.cuda.memory, "_record_memory_history"):
+        torch.cuda.memory._record_memory_history()
+
+    with torch.no_grad():
+        for i in range(args.out_len):
+            outputs = model(
+                input_ids=current_input_ids,
+                past_key_values=past_key_values,
+                use_cache=True,
+                num_logits_to_keep=1
+            )
+            
+            past_key_values = outputs.past_key_values
+            next_token_id = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(-1)
+            current_input_ids = next_token_id
+
+    peak_alloc = torch.cuda.memory.max_memory_allocated()
+    peak_alloc_mib = peak_alloc / 1024**2
+    print(f"peak_alloc    = {peak_alloc_mib:.2f} MiB")
+
+    save_data = {
+        "run": 1, 
+        "in_len": in_len,
+        "budget": total_budget,
+        "peak_alloc_mib": peak_alloc_mib
+    }
+
+    with open(output_path, "a", encoding="utf-8") as f:
+        json.dump(save_data, f, ensure_ascii=False)
+        f.write("\n")
+
+    del past_key_values
+    torch.cuda.empty_cache()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name_or_path", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
+    parser.add_argument("--data_root", type=str, default="myinput.txt")
+    parser.add_argument("--enable_h2o_cache", action="store_true")
+    parser.add_argument("--heavy_hitter_size", type=int, default=992)
+    parser.add_argument("--recent_size", type=int, default=32)
+    parser.add_argument("--out_len", type=int, default=32)
+    parser.add_argument("--num_runs", type=int, default=1)
+    parser.add_argument("--test_len", type=int, default=4096)
+    args = parser.parse_args()
+    main(args)

@@ -1,0 +1,177 @@
+budget-1024:
+  llama:
+    narrativeqa:
+      K: 9
+      L: 120
+    qasper: 
+      K: 7
+      L: 100
+    2wikimqa: 
+      K: 7 
+      L: 75
+    musique: 
+      K: 9
+      L: 150
+    gov_report: 
+      K: 8
+      L: 120
+    multi_news:
+      K: 7
+      L: 150
+    triviaqa: 
+      K: 8
+      L: 100
+    samsum: 
+      K: 8
+      L: 120
+    passage_count:
+      K: 8
+      L: 100
+    passage_retrieval_en: 
+      K: 8
+      L: 100
+    lcc: 
+      K: 7
+      L: 150
+    repobench-p:
+      K: 8
+      L: 100
+    ruler-4096:
+      K: 7
+      L: 120
+    ruler-8192:
+      K: 8
+      L: 135
+    ruler-16384:
+      K: 8
+      L: 85
+    ruler-32768:
+      K: 7
+      L: 45
+    ruler-65536:
+      K: 10
+      L: 125
+
+  qwen:
+    narrativeqa:
+      K: 9
+      L: 120
+    qasper:
+      K: 7
+      L: 100
+    2wikimqa:
+      K: 7
+      L: 75
+    musique:
+      K: 9
+      L: 150
+    gov_report:
+      K: 8
+      L: 120
+    multi_news:
+      K: 7
+      L: 150
+    triviaqa:
+      K: 8
+      L: 100
+    samsum:
+      K: 8
+      L: 120
+    passage_count:
+      K: 8
+      L: 100
+    passage_retrieval_en:
+      K: 8
+      L: 100
+    lcc:
+      K: 7
+      L: 150
+    repobench-p:
+      K: 8
+      L: 100
+    ruler-4096:
+      K: 7
+      L: 120
+    ruler-8192:
+      K: 8
+      L: 135
+    ruler-16384:
+      K: 8
+      L: 88
+    ruler-32768:
+      K: 9
+      L: 112
+    ruler-65536:
+      K: 10
+      L: 143
+
+  glm:
+    narrativeqa:
+      K: 9
+      L: 120
+    qasper:
+      K: 7
+      L: 100
+    2wikimqa:
+      K: 7
+      L: 75
+    musique:
+      K: 9
+      L: 150
+    gov_report:
+      K: 8
+      L: 120
+    multi_news:
+      K: 7
+      L: 150
+    triviaqa:
+      K: 8
+      L: 100
+    samsum:
+      K: 8
+      L: 120
+    passage_count:
+      K: 8
+      L: 100
+    passage_retrieval_en:
+      K: 8
+      L: 100
+    lcc:
+      K: 7
+      L: 150
+    repobench-p:
+      K: 8
+      L: 100
+
+budget-128:
+  llama:
+    ruler-65536:
+      K: 11
+      L: 65
+
+  qwen:
+    ruler-65536:
+      K: 11
+      L: 70
+
+budget-384:
+  llama:
+    ruler-65536:
+      K: 10
+      L: 75
+
+  qwen:
+    ruler-65536:
+      K: 10
+      L: 80
+
+budget-4096:
+  llama:
+    ruler-65536:
+      K: 8
+      L: 85
+
+  qwen:
+    ruler-65536:
+      K: 8
+      L: 88

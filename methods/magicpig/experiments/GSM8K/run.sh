@@ -1,0 +1,1 @@
+bash gsm8k_run.sh deepseek-r1-distill-qwen-1.5b 7 200 360

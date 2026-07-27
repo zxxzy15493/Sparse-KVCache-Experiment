@@ -1,0 +1,34 @@
+# cd to algorithm root (buchong_scripts/../../)
+cd "$(dirname -- "${BASH_SOURCE[0]}")/../../.."
+
+model="Qwen2.5-7B-Instruct"
+
+
+KS="128 256 512 1024"
+
+LOCAL_KS="32"
+RANKS="16"
+NAME="ann"
+SCORE="sparse_q"
+REALLOCATE_TO_MEAN_VALUE=True
+
+tasks="qasper narrativeqa"
+
+for task in $tasks;do
+    for K in $KS; do
+        for LOCAL_K in $LOCAL_KS; do
+            for RANK in $RANKS; do
+   save_path="./efficiency/recall_attnscores/longbench/qwen/${K}"
+    python ./experiments/recall/longbench/budget_mypred.py \
+    --model_path Qwen/Qwen2.5-7B-Instruct \
+    --config_path ./experiments/recall/longbench/config \
+    --dataset_path ../../benchmarks/Longbench_recall \
+    --model_name $model --task $task \
+    --name ${NAME} --k ${K}\
+    --local_k ${LOCAL_K}  --reallocate_to_mean_value ${REALLOCATE_TO_MEAN_VALUE}\
+    --score ${SCORE} --rank ${RANK} \
+    --recall_save_path ${save_path} 
+            done
+        done
+    done
+done

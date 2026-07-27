@@ -1,0 +1,10 @@
+{
+  "method": "reasonkv",
+  "window_size": 32,
+  "kernel_size": 7,
+  "pooling": "maxpool",
+  "head_choice": "reason",
+  "beta": 1.5,
+  "temp": 1.0,
+  "base_capacity": 4096
+}

@@ -1,0 +1,6 @@
+budget: 1024
+fixbudget: true
+compressor: original
+enable_vq_cache: true
+enable_h2o_cache: false
+pp_size: 1

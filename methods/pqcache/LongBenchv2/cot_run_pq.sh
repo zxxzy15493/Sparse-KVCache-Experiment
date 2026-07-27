@@ -1,0 +1,132 @@
+#!/bin/bash
+set -x
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+# sleep 2400
+# =========================
+# Basic params
+# =========================
+SEED="4321"
+
+# pq_search for PQ; original for no compression
+COMPRESSOR="pq_search"
+# COMPRESSOR="original"
+
+DEVICE="0"
+COMPRESS=0.1
+TOPK=0.5
+RECENT_RATIO=0.5
+SINK_SIZE=16
+BUDGET=4096
+SUBVEC=4
+SUBBITS=8
+TOPR=32
+METRIC="euc"
+GQA="True"
+MEAN_V_TRICK="False"
+MAX_ITER=0
+SCORE_FUNC="sum"
+MAX_CPU_IN_USE=16
+RECENT_SIZE=32
+FIXTHRESHOLD=0.9
+
+# =========================
+# Data paths
+# =========================
+MODEL_PATH="Qwen/Qwen2.5-7B-Instruct-1M"
+MODEL_NAME="qwen-2.5-7b"
+DATA_FILE="../../../benchmarks/longbenchv2/filtered_longbench_v2_64k-192k.jsonl"
+
+# Output and log dirs
+SAVE_DIR="results"
+LOG_DIR="logs"
+mkdir -p "${SAVE_DIR}" "${LOG_DIR}"
+
+# =========================
+# Env vars
+# =========================
+export CUDA_VISIBLE_DEVICES=${DEVICE}
+export TOKENIZERS_PARALLELISM=false
+
+# Reduce GPU memory fragmentation
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
+
+# Project path
+export PYTHONPATH="..${PYTHONPATH:+:${PYTHONPATH}}"
+
+# PQCache reads these via os.environ.get()
+# Must export, or Python subprocesses cannot see them
+export SUBVEC=${SUBVEC}
+export SUBBITS=${SUBBITS}
+export METRIC=${METRIC}
+export MAX_CPU_IN_USE=${MAX_CPU_IN_USE}
+
+# =========================
+# Auto-restart params
+# =========================
+MAX_RESTARTS=100000
+RESTART_SLEEP=100
+RESTART_COUNT=0
+
+# =========================
+# Main loop: auto-restart on abnormal exit
+# =========================
+while true; do
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    LOG_FILE="${LOG_DIR}/run_${MODEL_NAME}_${COMPRESSOR}_${TIMESTAMP}.log"
+
+    echo "========================================"
+    echo "Start running at ${TIMESTAMP}"
+    echo "Restart count: ${RESTART_COUNT}"
+    echo "Log file: ${LOG_FILE}"
+    echo "========================================"
+
+    python mypred.py \
+        --model_name "${MODEL_NAME}" \
+        --model_path "${MODEL_PATH}" \
+        --data_file "${DATA_FILE}" \
+        --save_dir "${SAVE_DIR}" \
+        --seed "${SEED}" \
+        --max_context_len 200000 \
+        --max_new_tokens 128 \
+        --enable_vq_cache \
+        --pp_size 1 \
+        --compressor "${COMPRESSOR}" \
+        --compress_ratio "${COMPRESS}" \
+        --fixbudget \
+        --budget "${BUDGET}" \
+        --fixthreshold "${FIXTHRESHOLD}" \
+        --important_ratio "${TOPK}" \
+        --recent_ratio "${RECENT_RATIO}" \
+        --recent_size "${RECENT_SIZE}" \
+        --sink_size "${SINK_SIZE}" \
+        --n_subvec_per_head "${SUBVEC}" \
+        --n_subbits "${SUBBITS}" \
+        --topr "${TOPR}" \
+        --gqa "${GQA}" \
+        --sparq_mean_v_trick "${MEAN_V_TRICK}" \
+        --max_iter "${MAX_ITER}" \
+        --score_func "${SCORE_FUNC}" \
+        --cot \
+        2>&1 | tee "${LOG_FILE}"
+
+    EXIT_CODE=${PIPESTATUS[0]}
+
+    echo "Python exit code: ${EXIT_CODE}"
+
+    if [ "${EXIT_CODE}" -eq 0 ]; then
+        echo "Job finished successfully."
+        break
+    fi
+
+    RESTART_COUNT=$((RESTART_COUNT + 1))
+
+    if [ "${RESTART_COUNT}" -ge "${MAX_RESTARTS}" ]; then
+        echo "Reached max restart count: ${MAX_RESTARTS}"
+        exit 1
+    fi
+
+    echo "Job crashed or was killed. Restarting after ${RESTART_SLEEP} seconds..."
+    sleep "${RESTART_SLEEP}"
+done

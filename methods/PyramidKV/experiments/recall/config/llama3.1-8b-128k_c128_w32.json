@@ -1,0 +1,1 @@
+{"window_size": 32, "max_capacity_prompt": 128, "kernel_size": 5, "pooling": "avgpool", "pyram_beta": 20}

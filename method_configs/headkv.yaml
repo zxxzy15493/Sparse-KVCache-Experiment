@@ -1,0 +1,7 @@
+budget: 1024
+window_size: 32
+kernel_size: 7
+pooling: maxpool
+floor: 32
+skip: 4
+normalize: true

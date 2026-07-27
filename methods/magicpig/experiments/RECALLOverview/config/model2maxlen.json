@@ -1,0 +1,9 @@
+{
+    "llama-3-8b-1048k": 130000,
+    "qwen2.5-7b": 130000,
+    "llama3.1-8b-Instruct": 130000,
+    "qwen2.5-7b-Instruct": 130000,
+    "qwen2.5-7b-Instruct-1M": 130000,
+    "llama3-8b-chat-128k": 130000,
+    "qwen2.5-72b": 130000
+}

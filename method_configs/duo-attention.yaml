@@ -1,0 +1,3 @@
+budget: 1024
+sink_size: 64
+recent_size: 256

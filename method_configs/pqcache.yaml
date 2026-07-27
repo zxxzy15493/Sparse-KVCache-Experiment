@@ -1,0 +1,7 @@
+budget: 1024
+fixbudget: true
+compressor: pq_search
+recent_size: 32
+sink_size: 16
+n_subvec_per_head: 2
+n_subbits: 6
