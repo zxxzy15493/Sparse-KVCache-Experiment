@@ -5,7 +5,7 @@ This project contains complete experiment code for four KV Cache eviction method
 ## Directory Structure
 
 ```
-method/
+methods/
 ├── streaming/          # StreamingLLM
 │   ├── experiment/     # Experiment scripts (LongBench / RULER / Recall / Efficiency)
 │   └── LongBenchV2/    # LongBenchV2 experiment
@@ -59,7 +59,7 @@ Each method has its own entry script and Python file; the rest is shared:
 | **Keyformer** | `keyformer/experiment` | `run_keyformer.sh` | `keyformer.py` | `--keyformer` |
 
 ```bash
-cd method/<method>/experiment
+cd methods/<method>/experiment
 bash run_<method>.sh    
 ```
 
@@ -82,6 +82,17 @@ Loaded via JSON config through `--compress_args_path`:
 | `max_capacity_prompts` | Max prompt cache capacity per layer |
 | `kernel_sizes` | Pooling kernel size |
 | `pooling` | Pooling method |
+
+Config files are named following the convention
+`ablation_c<capacity>_w<window>_k<kernel>_<pooling>.json`. For example,
+`ablation_c1024_w32_k7_maxpool.json` means:
+
+| Filename segment | JSON field | Value |
+|---|---|---|
+| `c1024` | `max_capacity_prompts` | 1024 (all 32 layers) |
+| `w32` | `window_sizes` | 32 |
+| `k7` | `kernel_sizes` | 7 |
+| `maxpool` | `pooling` | maxpool |
 
 ### H2O Parameters
 
@@ -124,8 +135,8 @@ bash run_eval.sh        # LongBench evaluation
 Shared across all methods, under each `experiment/RULER-main/scripts/`:
 
 ```bash
-bash run.sh <model_name> <benchmark_name>   # RULER dataset inference
-bash run_recall.sh                          # RULER dataset recall
+bash run.sh <model_name>(llama-3.1-8b/qwen-2.5-7b-1m) synthetic             # RULER dataset inference
+bash run_recall.sh      # RULER dataset recall
 ```
 
 Parameters: `HEAVY_HITTER_SIZE`, `RECENT_SIZE` are set directly in the script.
@@ -148,7 +159,7 @@ bash run_eval.sh         # Evaluation
 Supported by StreamingLLM and SnapKV:
 
 ```bash
-cd method/<method>/LongBenchV2
+cd methods/<method>/LongBenchV2
 bash run.sh
 ```
 

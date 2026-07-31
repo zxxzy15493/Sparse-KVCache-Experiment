@@ -1,4 +1,3 @@
-# pred_my.py  ——  LongBench 
 
 import os
 from datasets import load_dataset
@@ -20,9 +19,6 @@ QUEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if QUEST_ROOT not in sys.path:
     sys.path.insert(0, QUEST_ROOT)
 DEFAULT_LONGBENCH_DATASET = "THUDM/LongBench"
-#from evaluation.quest_attention import enable_quest_attention_eval
-from evaluation.llama import enable_tuple_kv_cache_for_llama 
-from evaluation.mistral import enable_tuple_kv_cache_for_mistral
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -60,11 +56,6 @@ def build_chat(tokenizer, prompt, model_name):
 
 
 def load_model_and_tokenizer(model_path: str, model_name,device: torch.device,args):
-    # if 'llama' in model_name.lower() or 'longchat' in model_name.lower():
-    #     enable_tuple_kv_cache_for_llama()
-    #     print("enable_tuple_kv_cache_for_llama")
-    # if 'mistral' in model_name.lower():
-    #     enable_tuple_kv_cache_for_mistral()
         
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
@@ -72,14 +63,10 @@ def load_model_and_tokenizer(model_path: str, model_name,device: torch.device,ar
         trust_remote_code=True, 
         torch_dtype=torch.bfloat16, 
         device_map="auto",
-        #attn_implementation="eager"
         attn_implementation="flash_attention_2"
     )
     model = model.eval()
-    # print("attn impl =", getattr(model.config, "_attn_implementation", None))
-    # print("attn class =", type(model.model.layers[0].self_attn))
 
-    #
     if "llama" in args.model_name.lower():
         from evaluation.quest_attention import enable_quest_attention_eval
         print("llama model")
@@ -90,14 +77,9 @@ def load_model_and_tokenizer(model_path: str, model_name,device: torch.device,ar
         from evaluation.quest_glm_attention import enable_quest_attention_eval
         print("glm model")
 
-    #if args.quest:      dense
     enable_quest_attention_eval(model, args)     # quest
-    # print("attn impl =", getattr(model.config, "_attn_implementation", None))
-    # print("attn class =", type(model.model.layers[0].self_attn))
 
     return model, tokenizer
-
-
 # ----------  ----------
 
 def run_longbench_pred(

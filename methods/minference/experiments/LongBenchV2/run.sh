@@ -1,23 +1,9 @@
-#!/bin/bash
-# Run LongBenchV2 evaluation with MInference
-#
-# Usage:
-#   bash run.sh <MODEL> [--no-cot] [--no-context] [--num-samples N]
-#
-#   MODEL: one of Llama-3.1-8B-Instruct, Qwen2.5-7B-Instruct, Qwen2.5-7B-Instruct-1M,
-#          GLM-4-9B-Chat-1M, DeepSeek-R1-Distill-Qwen-1.5B
-#
-# Examples:
-#   bash run.sh Qwen2.5-7B-Instruct-1M
-#   bash run.sh Llama-3.1-8B-Instruct
-#   bash run.sh Qwen2.5-7B-Instruct-1M --no-cot
-
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-MODEL="${1:-Qwen2.5-7B-Instruct-1M}"
+MODEL="${1:-qwen-2.5-7b-1m}"
 shift || true
 
 # Default flags

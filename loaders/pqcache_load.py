@@ -35,9 +35,15 @@ def load_model_and_tokenizer(args):
             setattr(method_args, key, value)
     for key, value in parse_set(args.set, args.method).items():
         setattr(method_args, key, value)
-    os.environ["MAX_CPU_IN_USE"] = "16"
-    os.environ["SUBVEC"] = str(method_args.n_subvec_per_head)
-    os.environ["SUBBITS"] = str(method_args.n_subbits)
+
+    max_cpu_in_use = os.environ.get("MAX_CPU_IN_USE", "16")
+    subvec = os.environ.get("SUBVEC", "2")
+    subbits = os.environ.get("SUBBITS", "6")
+    method_args.n_subvec_per_head = int(subvec)
+    method_args.n_subbits = int(subbits)
+    os.environ["MAX_CPU_IN_USE"] = max_cpu_in_use
+    os.environ["SUBVEC"] = subvec
+    os.environ["SUBBITS"] = subbits
 
     path = args.model_path
     device = torch.device(args.device)

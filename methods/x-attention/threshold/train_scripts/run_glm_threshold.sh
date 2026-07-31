@@ -22,7 +22,7 @@ case "${P_VALUE}" in
   *) P_TAG="$(printf '%s' "${P_VALUE}" | tr -d '.')" ;;
 esac
 
-MODEL_PATH="${MODEL_PATH:-THUDM/glm-4-9b-chat-1m}"
+MODEL_PATH="${MODEL_PATH:-zai-org/glm-4-9b-chat-1m}"
 TEXT_PATH="${TEXT_PATH:-threshold/text.json}"
 OUTPUT_DIR="${OUTPUT_DIR:-xattn/threshold/threshold}"
 OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_DIR}/glm_threshold_p${P_TAG}.py}"

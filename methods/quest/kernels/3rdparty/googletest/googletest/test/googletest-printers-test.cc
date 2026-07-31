@@ -550,13 +550,13 @@ TEST(PrintCStringTest, EscapesProperly) {
 #ifdef __cpp_lib_char8_t
 // const char8_t*.
 TEST(PrintU8StringTest, Const) {
-  const char8_t* p = u8"";
+  const char8_t* p = u8"界";
   EXPECT_EQ(PrintPointer(p) + " pointing to u8\"\\xE7\\x95\\x8C\"", Print(p));
 }
 
 // char8_t*.
 TEST(PrintU8StringTest, NonConst) {
-  char8_t p[] = u8"";
+  char8_t p[] = u8"世";
   EXPECT_EQ(PrintPointer(p) + " pointing to u8\"\\xE4\\xB8\\x96\"",
             Print(static_cast<char8_t*>(p)));
 }
@@ -569,7 +569,7 @@ TEST(PrintU8StringTest, Null) {
 
 // Tests that u8 strings are escaped properly.
 TEST(PrintU8StringTest, EscapesProperly) {
-  const char8_t* p = u8"'\"?\\\a\b\f\n\r\t\v\x7F\xFF hello ";
+  const char8_t* p = u8"'\"?\\\a\b\f\n\r\t\v\x7F\xFF hello 世界";
   EXPECT_EQ(PrintPointer(p) +
                 " pointing to u8\"'\\\"?\\\\\\a\\b\\f\\n\\r\\t\\v\\x7F\\xFF "
                 "hello \\xE4\\xB8\\x96\\xE7\\x95\\x8C\"",
@@ -579,13 +579,13 @@ TEST(PrintU8StringTest, EscapesProperly) {
 
 // const char16_t*.
 TEST(PrintU16StringTest, Const) {
-  const char16_t* p = u"";
+  const char16_t* p = u"界";
   EXPECT_EQ(PrintPointer(p) + " pointing to u\"\\x754C\"", Print(p));
 }
 
 // char16_t*.
 TEST(PrintU16StringTest, NonConst) {
-  char16_t p[] = u"";
+  char16_t p[] = u"世";
   EXPECT_EQ(PrintPointer(p) + " pointing to u\"\\x4E16\"",
             Print(static_cast<char16_t*>(p)));
 }
@@ -598,7 +598,7 @@ TEST(PrintU16StringTest, Null) {
 
 // Tests that u16 strings are escaped properly.
 TEST(PrintU16StringTest, EscapesProperly) {
-  const char16_t* p = u"'\"?\\\a\b\f\n\r\t\v\x7F\xFF hello ";
+  const char16_t* p = u"'\"?\\\a\b\f\n\r\t\v\x7F\xFF hello 世界";
   EXPECT_EQ(PrintPointer(p) +
                 " pointing to u\"'\\\"?\\\\\\a\\b\\f\\n\\r\\t\\v\\x7F\\xFF "
                 "hello \\x4E16\\x754C\"",
@@ -854,7 +854,7 @@ TEST(PrintArrayTest, Char8ArrayWithNoTerminatingNul) {
 
 // char8_t array with terminating NUL.
 TEST(PrintArrayTest, Char8ArrayWithTerminatingNul) {
-  const char8_t a[] = u8"\0";
+  const char8_t a[] = u8"\0世界";
   EXPECT_EQ("u8\"\\0\\xE4\\xB8\\x96\\xE7\\x95\\x8C\"", PrintArrayHelper(a));
 }
 #endif
@@ -966,14 +966,14 @@ TEST(PrintWideStringTest, StringAmbiguousHex) {
 
 #ifdef __cpp_lib_char8_t
 TEST(PrintStringTest, U8String) {
-  std::u8string str = u8"Hello, ";
+  std::u8string str = u8"Hello, 世界";
   EXPECT_EQ(str, str);  // Verify EXPECT_EQ compiles with this type.
   EXPECT_EQ("u8\"Hello, \\xE4\\xB8\\x96\\xE7\\x95\\x8C\"", Print(str));
 }
 #endif
 
 TEST(PrintStringTest, U16String) {
-  std::u16string str = u"Hello, ";
+  std::u16string str = u"Hello, 世界";
   EXPECT_EQ(str, str);  // Verify EXPECT_EQ compiles with this type.
   EXPECT_EQ("u\"Hello, \\x4E16\\x754C\"", Print(str));
 }

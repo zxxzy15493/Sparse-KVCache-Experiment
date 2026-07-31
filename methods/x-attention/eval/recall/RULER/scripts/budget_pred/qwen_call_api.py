@@ -96,8 +96,8 @@ fastprefillconfig = FastPrefillConfig(
   print_detail=args.print_detail,
   stride=args.stride,
   p=args.p,
-  metric=args.metric,
   task=args.task,
+  metric=args.metric,
   save_path=args.save_path,
 )
 
@@ -247,19 +247,8 @@ def main():
 
   task_file = args.data_dir / args.task / f'{args.subset}.jsonl'
 
-  if args.chunk_amount > 1:
-    pred_file = args.save_dir / f'{args.task}-{args.chunk_idx}.jsonl'
-  else:
-    pred_file = args.save_dir / f'{args.task}.jsonl'
-
-  print(f'Predict {args.task} \nfrom {task_file}\nto {pred_file}')
-  pred_file.parent.mkdir(parents=True, exist_ok=True)
-
-  if os.path.exists(pred_file):
-    pred_index = [sample['index'] for sample in read_manifest(pred_file)]
-    data = [sample for sample in read_manifest(task_file) if sample['index'] not in pred_index]
-  else:
-    data = read_manifest(task_file)
+  print(f'Predict {args.task} \nfrom {task_file}')
+  data = read_manifest(task_file)
 
   llm = get_llm(config['tokens_to_generate'])
 
@@ -312,40 +301,31 @@ def main():
   if len(batch):
     batched_data.append(batch)
 
-  with open(pred_file, 'at', encoding="utf-8", buffering=1) as fout:
-    start_idx = 0
 
-    for batch_idx, batch in tqdm(enumerate(batched_data), total=len(batched_data)):
-      idx_list = [data_point['idx'] for data_point in batch]
-      end_idx = idx_list[-1]
+  for batch_idx, batch in tqdm(enumerate(batched_data), total=len(batched_data)):
+    idx_list = [data_point['idx'] for data_point in batch]
 
-      thread = threading.Thread(
-        target=get_output,
-        kwargs=dict(
-          idx_list=idx_list,
-          index_list=[data_point['index'] for data_point in batch],
-          input_list=[data_point['input'] for data_point in batch],
-          outputs_list=[data_point['outputs'] for data_point in batch],
-          others_list=[data_point.get('others', {}) for data_point in batch],
-          truncation_list=[data_point.get('truncation', -1) for data_point in batch],
-          length_list=[data_point.get('length', -1) for data_point in batch],
-        ),
-      )
-      thread.start()
-      threads.append(thread)
+    thread = threading.Thread(
+      target=get_output,
+      kwargs=dict(
+        idx_list=idx_list,
+        index_list=[data_point['index'] for data_point in batch],
+        input_list=[data_point['input'] for data_point in batch],
+        outputs_list=[data_point['outputs'] for data_point in batch],
+        others_list=[data_point.get('others', {}) for data_point in batch],
+        truncation_list=[data_point.get('truncation', -1) for data_point in batch],
+        length_list=[data_point.get('length', -1) for data_point in batch],
+      ),
+    )
+    thread.start()
+    threads.append(thread)
 
-      is_last_batch = (batch_idx == len(batched_data) - 1)
+    is_last_batch = (batch_idx == len(batched_data) - 1)
 
-      if (len(threads) == args.threads) or is_last_batch:
-        for thread in threads:
-          thread.join()
-        threads = []
-
-        for idx in range(start_idx, end_idx + 1):
-          if len(outputs_parallel[idx]) > 0:
-            outputs_parallel[idx]
-
-        start_idx = end_idx + 1
+    if (len(threads) == args.threads) or is_last_batch:
+      for thread in threads:
+        thread.join()
+      threads = []
 
   print(f"Used time: {round((time.time() - start_time) / 60, 1)} minutes")
 

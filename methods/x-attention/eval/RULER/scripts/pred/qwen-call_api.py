@@ -62,15 +62,10 @@ import torch.nn as nn
 import types
 
 from xattn.src.Xattention import Xattention_prefill
-#from xattn.src.Flexprefill import Flexprefill_prefill
-#from xattn.src.Minference import Minference_prefill
+
 from flash_attn import flash_attn_func
 #192k0.80.9    0.9  
 from qwen_ratio import max
-#  ratio.py max
-# from ratio import max_ratio, max
-# ========================================
-
 
 SERVER_TYPES = (
     "trtllm",
@@ -272,24 +267,7 @@ def qwen_new_attention_forward(
             ).transpose(1, 2)
 
         attn_weights = None
-    else:   #decode 
-        # decode  KV cache  attention
-        # attn_weights = torch.matmul(
-        #     query_states, key_states.transpose(2, 3)
-        # ) / math.sqrt(self.head_dim)
-
-        # if attention_mask is not None:
-        #     causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        #     attn_weights = attn_weights + causal_mask
-
-        # attn_weights = nn.functional.softmax(
-        #     attn_weights, dim=-1, dtype=torch.float32
-        # ).to(query_states.dtype)
-        # attn_weights = nn.functional.dropout(
-        #     attn_weights, p=self.attention_dropout, training=self.training
-        # )
-        # attn_output = torch.matmul(attn_weights, value_states)
-
+    else:   
         if key_states.device != query_states.device:
             key_states = key_states.to(query_states.device)
         if value_states.device != query_states.device:

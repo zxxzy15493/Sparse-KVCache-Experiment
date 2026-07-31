@@ -16,10 +16,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 from xattn.src.Xattention import Xattention_prefill
-from xattn.src.Flexprefill import Flexprefill_prefill
-from xattn.src.Minference import Minference_prefill
-
-
+DEFAULT_LONGBENCH_DATASET = "THUDM/LongBench"
 try:
     from flash_attn import flash_attn_func
     FLASH_ATTN_AVAILABLE = True
@@ -45,9 +42,16 @@ def parse_args(args=None):
     parser.add_argument(
         "--longbench_dir",
         type=str,
-        default="",
+        default=None,
         help="Path to local LongBench data directory",
     )
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default=DEFAULT_LONGBENCH_DATASET,
+        help="HuggingFace LongBench dataset repo",
+    )
+
     return parser.parse_args(args)
 
 
@@ -122,16 +126,6 @@ def glm_core_attention_forward(self, query_layer, key_layer, value_layer, attent
                 keep_sink=True,
                 keep_recent=True,
             )
-        elif self.method == "flex":
-            attn_output = Flexprefill_prefill(
-                query_layer.transpose(1, 2),
-                key_layer.transpose(1, 2),
-                value_layer.transpose(1, 2),
-                gamma=0.9,
-                tau=0.1,
-            ).transpose(1, 2)
-        elif self.method == "minference":
-            attn_output = Minference_prefill(query_layer, key_layer, value_layer)
         elif self.method == "full":
             if FLASH_ATTN_AVAILABLE:
                 attn_output = flash_attn_func(
@@ -308,7 +302,7 @@ def patch_glm_attention(model, method):
 
     if patched == 0:
         raise RuntimeError(" core_attention  ChatGLM-4")
-    print(f"[info] patched {patched} core_attention modules")
+    #print(f"[info] patched {patched} core_attention modules")
 
 
 if __name__ == "__main__":
@@ -351,11 +345,15 @@ if __name__ == "__main__":
         os.makedirs("eval/LongBench/pred_e")
 
     for dataset in datasets:
-        local_file = os.path.join(args.longbench_dir, f"{dataset}.jsonl")
-        if not os.path.exists(local_file):
-            raise FileNotFoundError(f"Local LongBench file not found: {local_file}")
-
-        data = load_dataset("json", data_files={"test": local_file})["test"]
+        if args.longbench_dir:
+            suffix = "_e" if args.e else ""
+            local_file = Path(args.longbench_dir) / f"{dataset}{suffix}.jsonl"
+            if not local_file.exists():
+                raise FileNotFoundError(f"Local LongBench file not found: {local_file}")
+            data = load_dataset("json", data_files={"test": str(local_file)})["test"]
+        else:
+            dataset_name = f"{dataset}_e" if args.e else dataset
+            data = load_dataset(args.dataset_name, dataset_name, split="test")
 
         model_out_dir = f"eval/LongBench/pred/{model_name}"
         os.makedirs(model_out_dir, exist_ok=True)

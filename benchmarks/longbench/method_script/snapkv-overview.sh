@@ -3,7 +3,7 @@ set -euo pipefail
 
 method=snapkv
 experiment=overview
-models=(llama-3.1-8b qwen-2.5-7b qwen-2.5-7b-1m glm-4-9b-1m ds-qwen-1.5b)
+models=(llama-3.1-8b qwen-2.5-7b glm-4-9b-1m)
 budgets=(1024)
 datasets=(narrativeqa qasper 2wikimqa musique gov_report multi_news triviaqa samsum passage_count passage_retrieval_en lcc repobench-p)
 

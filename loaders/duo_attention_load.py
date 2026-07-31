@@ -27,6 +27,12 @@ def load_model_and_tokenizer(args):
     for key, value in parse_set(args.set, args.method).items():
         setattr(method_args, key, value)
 
+    # Map fixthreshold (framework naming) → sparsity (duo_attn naming)
+    if hasattr(method_args, "fixthreshold"):
+        method_args.sparsity = method_args.fixthreshold
+
+    print(f"[DuoAttention] sparsity={getattr(method_args, 'sparsity', 'N/A')}  sink={method_args.sink_size}  recent={method_args.recent_size}")
+
     model_name = args.model
     path = args.model_path
     device = torch.device(args.device)
@@ -46,7 +52,7 @@ def load_model_and_tokenizer(args):
     # Resolve the full-attention heads directory and filename for the model
     attn_patterns_dir = duo_root / "attn_patterns"
     mapping = {
-        "llama-3.1-8b": "Meta-Llama-3.1-8B-Instruct/lr=0.02-reg=0.05-ctx=1000_128000-multi_passkey10",
+        "llama-3.1-8b": "Meta-Llama-3.1-8B-Instruct",
         "qwen-2.5-7b": "Qwen2.5-7B-Instruct",
         "qwen-2.5-7b-1m": "Qwen2.5-7B-Instruct",
         "glm-4-9b-1m": "glm-4-9b-chat-1m",
@@ -70,7 +76,7 @@ def load_model_and_tokenizer(args):
         recent_size=method_args.recent_size,
     )
 
-    model = model.to(device).eval()
+    model = model.eval()
 
     args._method_args = method_args
     args._cleanup = None

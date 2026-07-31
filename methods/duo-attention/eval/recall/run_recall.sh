@@ -45,7 +45,7 @@ fi
 # ==========================================
 # Sparsity values to loop through
 # ==========================================
-SPARSITY_VALUES=("0.6" "0.7" "0.8" "0.9")
+SPARSITY_VALUES=("0.5")
 
 for sparsity in "${SPARSITY_VALUES[@]}"; do
 
@@ -66,7 +66,7 @@ echo ""
 
 LB_DATA="../../../../benchmarks/Longbench_recall"
 LB_DATASETS=("qasper" "narrativeqa")
-LB_MODELS=("qwen2.5-7b-instruct")
+LB_MODELS=("llama3.1-8b-128k" "qwen2.5-7b-instruct")
 
 for model_key in "${LB_MODELS[@]}"; do
     model_name="$(get_model_path "$model_key")"
@@ -115,7 +115,7 @@ for model_key in "${LB_MODELS[@]}"; do
             --dataset_name "$ds" \
             --attn_load_dir "$attn_dir" \
             --sparsity $sparsity \
-            --sink_size 64 \
+            --sink_size 128 \
             --recent_size 256
 
         if [ $? -eq 0 ]; then
@@ -137,16 +137,15 @@ echo " Seq_len: 65536 | Sparsity: $sparsity"
 echo "=============================================="
 echo ""
 
-RULER_ROOT="../../../../benchmarks/recall_test"
+RULER_ROOT="../../../../benchmarks/Ruler_recall"
 
 get_ruler_data_dir() {
     case "$1" in
-        llama3.1-8b-128k)       echo "llama3.1-8b" ;;
-        qwen2.5-7b-instruct-1m) echo "qwen2.5-7b" ;;
+        llama3.1-8b-128k)       echo "llama-3.1-8b" ;;
+        qwen2.5-7b-instruct-1m) echo "qwen-2.5-7b-1m" ;;
         *) echo "" ;;
     esac
 }
-
 RULER_TASKS=("fwe" "vt" "niah_single_3")
 RULER_MODELS=("llama3.1-8b-128k" "qwen2.5-7b-instruct-1m")
 SEQ_LEN=65536
@@ -208,7 +207,7 @@ for model_key in "${RULER_MODELS[@]}"; do
             --task "$task" \
             --attn_load_dir "$attn_dir" \
             --sparsity $sparsity \
-            --sink_size 64 \
+            --sink_size 128 \
             --recent_size 256
 
         if [ $? -eq 0 ]; then

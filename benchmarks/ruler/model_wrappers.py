@@ -28,8 +28,8 @@ class RulerModel:
     def __init__(self, method: str, model: str, budget: int, device: str, overrides: list[str], max_seq_length: int | None = None):
         seed_everything()
         self.method = method
-        self.args = Namespace(method=method, model=model, budget=budget, device=device, set=overrides, max_seq_length=max_seq_length)
-        ## 打印args的所有值
+        self.args = Namespace(method=method, model=model, budget=budget, device=device, set=overrides, max_seq_length=max_seq_length, dataset="ruler")
+     
         print("RulerModel args: =================================== ================================")
         for key, value in vars(self.args).items():
             print(f"{key}: {value}")

@@ -14,7 +14,6 @@ from cake.cake_cache import CakeprefillKVCache
 from cake.utils import CompressConfig
 
 
-# python efficiency.py --models llama3.1-8b-128k qwen2.5-7b-instruct --input_file --cache_size 1024 --input_max_token 131072 --max_new_tokens 32 --save_dir ./results --debug_timing
 
 
 def parse_args():

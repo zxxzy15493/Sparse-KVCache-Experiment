@@ -1,6 +1,7 @@
 
 import os
 import json
+import csv
 import argparse
 import random
 import numpy as np
@@ -38,9 +39,49 @@ def parse_args():
   parser.add_argument("--task", type=str, default="file_prompt", help="Task name for logging")
   parser.add_argument("--dataset_path", type=str, required=True, help="Path to input text file used as prompt")
   parser.add_argument("--max_new_tokens", type=int, default=128, help="Max tokens to generate; TTFT mode forces this to 1")
+  parser.add_argument("--csv_path", type=Path, default=Path("../vram_results.csv"), help="Peak VRAM CSV results file")
   
 
   return parser.parse_args()
+
+
+def get_model_type(model_name: str, model_path: str) -> str:
+  name = f"{model_name} {model_path}".lower()
+  if "qwen" in name:
+    return "Qwen"
+  if "llama" in name:
+    return "Llama"
+  return model_name or Path(model_path).name
+
+
+def append_vram_csv(args, algorithm: str, model_type: str, input_length: int, output_length: int, peak_alloc: int, peak_reserved: int):
+  csv_path = Path(args.csv_path)
+  csv_path.parent.mkdir(parents=True, exist_ok=True)
+  fieldnames = [
+    "algorithm",
+    "model_type",
+    "model_name",
+    "budget",
+    "input_length",
+    "output_length",
+    "peak_alloc_mib",
+    "peak_reserved_mib",
+  ]
+  write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+  with open(csv_path, "a", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    if write_header:
+      writer.writeheader()
+    writer.writerow({
+      "algorithm": algorithm,
+      "model_type": model_type,
+      "model_name": args.model_name or args.model_path,
+      "budget": args.token_budget,
+      "input_length": input_length,
+      "output_length": output_length,
+      "peak_alloc_mib": f"{peak_alloc / 1024**2:.2f}",
+      "peak_reserved_mib": f"{peak_reserved / 1024**2:.2f}",
+    })
 
 
 
@@ -169,7 +210,16 @@ def VRAM(
       print(f"budget = {args.token_budget}")
 
       print(f"peak_alloc  = {peak_alloc / 1024**2:.2f} MiB")
-      print(f"peak_reserved = {peak_reserved / 1024**2:.2f} MiB")  
+      #print(f"peak_reserved = {peak_reserved / 1024**2:.2f} MiB")  
+      append_vram_csv(
+        args=args,
+        algorithm="quest",
+        model_type=get_model_type(args.model_name, args.model_path),
+        input_length=seqlen,
+        output_length=max_new_tokens,
+        peak_alloc=peak_alloc,
+        peak_reserved=peak_reserved,
+      )
 
 
 

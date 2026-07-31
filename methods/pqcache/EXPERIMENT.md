@@ -1,7 +1,6 @@
 # PQCache Experiment Guide
 
-Method aliases: **full** = `original`, **topk** = `no_drop_lb`, **topk32** =
-`no_drop_lb_32`, **topp** = `no_drop_lb_topp`, and **pq** = `pq_search`.
+Method aliases: **full** = `original`, **topk(query per kv head)** = `no_drop_lb`, **topk32(query per kv head)** =`no_drop_lb_32`, **topp** = `no_drop_lb_topp`, and **pq** = `pq_search`.
 
 ## 1. Accuracy overview
 
@@ -18,8 +17,6 @@ cd methods/pqcache/RULER/scripts
 bash run_ruler_overview.sh
 ```
 
-The LongBench scripts evaluate predictions automatically. The RULER scripts
-generate data, predict, and evaluate in the same run.
 
 ## 2. Accuracy budget
 
@@ -41,7 +38,7 @@ Measures prefill and decoding latency across increasing input lengths.
 
 ```bash
 cd methods/pqcache/efficiency_test
-bash run_latency_overview_full.sh   # full attention
+bash run_latency_overview_full.sh   # full attention with no repeatkv function 
 bash run_latency_overview.sh        # PQCache
 ```
 
@@ -126,3 +123,15 @@ python evaluate.py --force --input pred/gsm8k/<model>/<compressor>/gsm8k.jsonl
 ```
 
 Predictions and evaluation files are written below `pred/gsm8k/`.
+
+## 9. Breakdown
+
+Measures per-component runtime breakdown for full attention and PQCache.
+
+```bash
+cd methods/pqcache
+bash breakdown_test/run_native_breakdown.sh   # full attention
+bash breakdown_test/run_breakdown.sh          # PQCache
+```
+
+Breakdown logs and CSV files are written under `methods/pqcache/breakdown_test/log/`.

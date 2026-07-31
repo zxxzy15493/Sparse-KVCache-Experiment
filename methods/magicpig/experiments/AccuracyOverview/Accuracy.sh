@@ -12,7 +12,7 @@ if [ "$BENCHMARK" = "LongBench" ]; then
     DATA_DIR="${DATA_ROOT}/longbench"
 elif [ "$BENCHMARK" = "Synthetic" ]; then
     case "$MODEL_NAME" in
-        llama3.1*|llama-3.1*) MODEL_SHORT="llama3.1-8b" ;;
+        llama3.1*|llama-3.1*) MODEL_SHORT="llama-3.1-8b" ;;
         qwen2.5*|qwen-2.5*)   MODEL_SHORT="qwen-2.5-7b-1m" ;;
         glm*)                  MODEL_SHORT="glm-4-9b" ;;
         *)                     MODEL_SHORT="$MODEL_NAME" ;;
@@ -24,8 +24,13 @@ else
 fi
 
 KLS="${K}_${L}"
-RESULT_DIR="./results/pred/${MODEL_NAME}/${BENCHMARK}/${KLS}"
-LOG_DIR="./log/pred/${MODEL_NAME}/${BENCHMARK}/${KLS}"
+if [ "$BENCHMARK" = "Synthetic" ]; then
+    RESULT_DIR="./results/pred/${MODEL_NAME}/${BENCHMARK}/${MAX_LEN}/${KLS}"
+    LOG_DIR="./log/pred/${MODEL_NAME}/${BENCHMARK}/${MAX_LEN}/${KLS}"
+else
+    RESULT_DIR="./results/pred/${MODEL_NAME}/${BENCHMARK}/${KLS}"
+    LOG_DIR="./log/pred/${MODEL_NAME}/${BENCHMARK}/${KLS}"
+fi
 
 mkdir -p ${RESULT_DIR}
 mkdir -p ${LOG_DIR}
@@ -53,12 +58,19 @@ torchrun --nproc_per_node=${NPROC_PER_NODE:-1} ./pred.py \
     >${LOG_DIR}/${TASK}.log 2>&1
 
 echo "Start to evaluate..."
-python -u eval.py \
-    --model ${MODEL_NAME} \
-    --benchmark ${BENCHMARK} \
-    --task ${TASK} \
-    --save_dir ${RESULT_DIR} \
-    --data_dir ${DATA_DIR}
-
-echo "Results:"
-cat "${RESULT_DIR}/result.json"
+if [ "$BENCHMARK" = "LongBench" ]; then
+    python -u eval.py \
+        --model ${MODEL_NAME} \
+        --benchmark ${BENCHMARK} \
+        --task ${TASK} \
+        --save_dir ${RESULT_DIR} \
+        --data_dir ${DATA_DIR}
+    echo "Results:"
+    cat "${RESULT_DIR}/result.json"
+elif [ "$BENCHMARK" = "Synthetic" ]; then
+    python -u evaluate.py \
+        --data-dir ${RESULT_DIR} \
+        --tasks ${TASK}
+    echo "Results:"
+    cat "${RESULT_DIR}/summary.csv"
+fi

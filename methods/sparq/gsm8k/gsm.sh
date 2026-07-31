@@ -4,4 +4,5 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 python "$SCRIPT_DIR/evaluation_full.py" \
-    --save_dir "$SCRIPT_DIR/res"
+    --save_dir "$SCRIPT_DIR/res" \
+    --token_budget 360

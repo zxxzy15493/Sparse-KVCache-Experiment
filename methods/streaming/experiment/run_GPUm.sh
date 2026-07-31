@@ -2,13 +2,13 @@
 
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
-DATA_ROOT="../../benchmarks/myinput.txt"
+DATA_ROOT="../../../benchmarks/myinput.txt"
 
 START_SIZE=16
 BUDGET=1024
 RECENT=$((BUDGET - START_SIZE))
 
-TEST_LENS=(262144)
+TEST_LENS=(4096 8192 16384 32768 65536 131072 262144)
 
 MODELS=("$Llama" "$Qwen_1M")
 

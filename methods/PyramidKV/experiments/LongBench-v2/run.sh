@@ -1,12 +1,6 @@
-
-
-# bash run.sh
-    # "meta-llama/Llama-3.1-8B-Instruct"
-	# "Qwen/Qwen2.5-7B-Instruct-1M"
-
 METHOD="pyramidkv"
 MODEL_NAME="Qwen/Qwen2.5-7B-Instruct-1M"
-SAVE_DIR="results1"
+SAVE_DIR="results"
 MAX_CAPACITY_PROMPTS=4096
 WINDOW_SIZE=32
 PYRAM_BETA=10

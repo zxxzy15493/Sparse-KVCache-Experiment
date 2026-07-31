@@ -16,7 +16,7 @@ from duo_attn.utils import load_attn_pattern, sparsify_attention_heads, to_devic
 
 def parse_args():
 	parser = argparse.ArgumentParser(description="DuoAttention efficiency benchmark")
-	parser.add_argument("--model", type=str, required=True, help="model name or path")
+	parser.add_argument("--model", type=str, default=None, help="model name or path")
 	parser.add_argument(
 		"--models",
 		nargs="+",
@@ -149,7 +149,26 @@ def load_model_and_tokenizer(args):
 	if args.method == "duo_attn":
 		if args.attn_load_dir is None:
 			raise ValueError("When --method duo_attn, --attn_load_dir must be provided")
-		full_attention_heads, sink_size, recent_size = load_attn_pattern(args.attn_load_dir)
+
+		# Resolve model-specific attn pattern subdirectory
+		attn_dir = args.attn_load_dir
+		model_short = os.path.basename(args.model.rstrip("/"))
+		if not os.path.isfile(os.path.join(attn_dir, "full_attention_heads.tsv")):
+			# Try candidate names: model short name, short name without -1M suffix
+			for candidate_name in [model_short, model_short.replace("-1M", "")]:
+				candidate = os.path.join(attn_dir, candidate_name)
+				if os.path.isdir(candidate):
+					attn_dir = candidate
+					break
+			else:
+				# Fallback: scan all subdirectories for full_attention_heads.tsv
+				for d in os.listdir(attn_dir):
+					sub = os.path.join(attn_dir, d)
+					if os.path.isfile(os.path.join(sub, "full_attention_heads.tsv")):
+						attn_dir = sub
+						break
+
+		full_attention_heads, sink_size, recent_size = load_attn_pattern(attn_dir)
 		if args.sink_size is not None:
 			sink_size = args.sink_size
 		if args.recent_size is not None:
@@ -160,7 +179,7 @@ def load_model_and_tokenizer(args):
 			None,
 			sparsity=args.sparsity,
 		)
-		print(f"[Duo] attn_load_dir={args.attn_load_dir}")
+		print(f"[Duo] attn_load_dir={attn_dir}")
 		print(f"[Duo] sink_size={sink_size}, recent_size={recent_size}, true_sparsity={true_sparsity}")
 		enable_duo_attention_eval(model, full_attention_heads, sink_size, recent_size)
 	else:
@@ -355,6 +374,11 @@ def measure_efficiency(model, tokenizer, text, args, input_max_token: int):
 
 def main():
 	args = parse_args()
+	if args.model is None and args.models is None:
+		parser = argparse.ArgumentParser(description="DuoAttention efficiency benchmark")
+		parser.print_usage()
+		print("error: one of --model or --models must be provided")
+		sys.exit(1)
 	seed_everything(args.seed)
 
 	text = load_dataset(args.input_file)

@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument("--depth_ratio_num_intervals", type=int, default=10)
     parser.add_argument("--num_passkeys", type=int, default=10)
     parser.add_argument("--output_dir", type=str, default="outputs")
-    parser.add_argument("--sink_size", type=int, default=64)
+    parser.add_argument("--sink_size", type=int, default=128)
     parser.add_argument("--recent_size", type=int, default=256)
     parser.add_argument("--deploy_sink_size", type=int, default=None)
     parser.add_argument("--deploy_recent_size", type=int, default=None)

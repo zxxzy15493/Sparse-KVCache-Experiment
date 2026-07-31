@@ -96,7 +96,7 @@ def load_model_and_tokenizer(model_path: str, device: torch.device,use_flexprefi
             "block_size": 128,
             "flex_prefill_gamma": 0.9,
             "flex_prefill_tau": 0.1,
-            "flex_prefill_min_budget": 1024,
+            "flex_prefill_min_budget": 512,
             "flex_prefill_max_budget": None,
         }
         #  dense attention  FlexPrefill sparse attention

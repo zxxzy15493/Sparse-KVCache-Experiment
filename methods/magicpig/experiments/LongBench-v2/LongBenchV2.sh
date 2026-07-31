@@ -29,4 +29,6 @@ CUDA_VISIBLE_DEVICES=0\
     --measure_time ${MEASURE_TIME}\
     --cot\
     ${STOP_WORDS} >> ${LOG_DIR}/LongBenchV2.log 2>&1
-    
+
+python -u ./result.py \
+    --save_dir ${PRED_DIR}

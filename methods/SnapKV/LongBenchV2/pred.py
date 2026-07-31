@@ -44,7 +44,7 @@ def load_model_and_tokenizer(path, torch_dtype=torch.bfloat16):
     model = model.eval()
     return model, tokenizer
 
-def set_snapkv_layers(model, compress_args, check_recall=False):
+def set_snapkv_layers(model, compress_args):
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         model_layers = model.model.layers
     elif hasattr(model, "transformer") and hasattr(model.transformer, "encoder") and hasattr(model.transformer.encoder, "layers"):
@@ -72,7 +72,17 @@ def set_snapkv_layers(model, compress_args, check_recall=False):
             attn.config.max_capacity_prompt = max_capacity_prompts[i]
             attn.config.kernel_size = kernel_sizes[i]
             attn.config.pooling = pooling
-            attn.check_recall = check_recall
+
+def build_chat_prompt(tokenizer, prompt: str) -> str:
+    try:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+    except Exception:
+        return prompt
+
 
 def extract_answer(response):
     response = response.replace('*', '')
@@ -93,7 +103,7 @@ def get_pred_local(data, args, out_file, model, tokenizer, compress_args=None):
     with open(out_file, 'a', encoding='utf-8') as fout:
         for item in tqdm(data, desc="Evaluating"):
             if compress_args:
-                set_snapkv_layers(model, compress_args, args.check_recall)
+                set_snapkv_layers(model, compress_args)
 
             context = item['context']
             if args.rag > 0:
@@ -116,6 +126,7 @@ def get_pred_local(data, args, out_file, model, tokenizer, compress_args=None):
                 prompt = tokenizer.decode(input_ids, skip_special_tokens=True)
             
             def local_generate(p, max_tokens):
+                p = build_chat_prompt(tokenizer, p)
                 inputs = tokenizer(p, return_tensors="pt").to(device)
                 try:
                     ctx = torch.inference_mode()
@@ -199,6 +210,5 @@ if __name__ == "__main__":
     parser.add_argument("--no_context", "-nc", action='store_true') 
     parser.add_argument("--rag", "-rag", type=int, default=0) 
     parser.add_argument('--compress_args_path', type=str, default=None, help="Path to the compress args")
-    parser.add_argument('--check_recall', action='store_true', help="Enable recall calculation during decoding")
     args = parser.parse_args()
     main(args)

@@ -14,13 +14,13 @@ LongBench=(
     "repobench-p"
 )
       
-Qwen="Qwen/Qwen2.5-7B-Instruct"
-Llama="meta-llama/Llama-3.1-8B-Instruct"
-DATASET="Longbench"
+Qwen="Qwen2.5-7B-Instruct"
+Llama="Llama-3.1-8B-Instruct"
+DATASET="LongBench"
 COMPRESS_ARGS_PATH="./config/ablation_c1024_w32_k7_maxpool.json"
 
 
-for DATASET_NAME in "${Ruler[@]}"; do
+for DATASET_NAME in "${LongBench[@]}"; do
 
     echo "$DATASET_NAME"
 

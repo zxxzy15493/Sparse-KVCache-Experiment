@@ -233,13 +233,7 @@ def main():
 
   task_file = args.data_dir / args.task / f'{args.subset}.jsonl'
 
-  if args.chunk_amount > 1:
-    pred_file = args.save_dir / f'{args.task}-{args.chunk_idx}.jsonl'
-  else:
-    pred_file = args.save_dir / f'{args.task}.jsonl'
-    
-  print(f'Predict {args.task} \nfrom {task_file}\nto {pred_file}')
-  pred_file.parent.mkdir(parents=True, exist_ok=True)
+  print(f'Predict {args.task} \nfrom {task_file}')
 
 
   data = read_manifest(task_file)
@@ -247,10 +241,10 @@ def main():
   llm = get_llm(config['tokens_to_generate'])
 
   if "llama" in args.model_name_or_path.lower():
-    from methods.quest.evaluation.quest_attention import enable_quest_attention_eval
+    from evaluation.quest_attention import enable_quest_attention_eval
     print("llama model")
   elif "qwen" in args.model_name_or_path.lower():
-    from methods.quest.evaluation.quest_qwen_attention import enable_quest_attention_eval
+    from evaluation.quest_qwen_attention import enable_quest_attention_eval
     print("qwen model")
 
 
@@ -271,35 +265,23 @@ def main():
   if len(batch):
     batched_data.append(batch)
 
-  with open(pred_file, 'at', encoding="utf-8", buffering=1) as fout:
-    for batch_idx, batch in tqdm(enumerate(batched_data), total=len(batched_data)):
-      input_list = [data_point['input'] for data_point in batch]
+  for batch_idx, batch in tqdm(enumerate(batched_data), total=len(batched_data)):
+    input_list = [data_point['input'] for data_point in batch]
 
-      while True:
-        try:
-          pred_list = llm.process_batch(prompts=input_list)
-          break
-        except Exception as e:
-          traceback.print_exc()
+    while True:
+      try:
+        pred_list = llm.process_batch(prompts=input_list)
+        break
+      except Exception as e:
+        traceback.print_exc()
 
-      for pred, data_point in zip(pred_list, batch):
-        if isinstance(pred['text'], str):
-          pred_text = pred['text']
-        elif len(pred['text']) > 0:
-          pred_text = pred['text'][0]
-        else:
-          pred_text = ''
-
-        record = {
-          'index': data_point['index'],
-          'pred': pred_text,
-          'outputs': data_point['outputs'],
-          'input': data_point['input'],
-          'others': data_point.get('others', {}),
-          'truncation': data_point.get('truncation', -1),
-          'length': data_point.get('length', -1),
-        }
-        fout.write(json.dumps(record) + '\n')
+    for pred, data_point in zip(pred_list, batch):
+      if isinstance(pred['text'], str):
+        pred_text = pred['text']
+      elif len(pred['text']) > 0:
+        pred_text = pred['text'][0]
+      else:
+        pred_text = ''
 
   print(f"Used time: {round((time.time() - start_time) / 60, 1)} minutes")
 

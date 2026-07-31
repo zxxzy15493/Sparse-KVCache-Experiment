@@ -1,94 +1,54 @@
-# container: docker.io/cphsieh/ruler:0.1.0
-# bash run.sh qwen2.5-7b  synthetic
-
+#!/bin/bash
 
 export PYTHONPATH=$PYTHONPATH:$(pwd)/../../
-if [ $# -ne 2 ]; then
-    echo "Usage: $0 <model_name> $1 <benchmark_name>"
-    exit 1
-fi
 
-
-# Root Directories
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-GPUS="1" # GPU size for tensor_parallel.
-ROOT_DIR="recall_results" # the path that stores generated task samples and model predictions.
-MODEL_DIR="../.." # the path that contains individual model folders from HUggingface.
-ENGINE_DIR="." # the path that contains individual engine folders from TensorRT-LLM.
-BATCH_SIZE=1  # increase to improve GPU utilization
+GPUS="1"
+ROOT_DIR="recall_results"
+BATCH_SIZE=1
 RECENT_SIZE=32
 
-
-
-# Model and Tokenizer
+# Source model & task configs
 source config_models.sh
-MODEL_NAME=${1}
-MODEL_CONFIG=$(MODEL_SELECT ${MODEL_NAME} ${MODEL_DIR} ${ENGINE_DIR})
-IFS=":" read MODEL_PATH MODEL_TEMPLATE_TYPE MODEL_FRAMEWORK TOKENIZER_PATH TOKENIZER_TYPE OPENAI_API_KEY GEMINI_API_KEY AZURE_ID AZURE_SECRET AZURE_ENDPOINT <<< "$MODEL_CONFIG"
-if [ -z "${MODEL_PATH}" ]; then
-    echo "Model: ${MODEL_NAME} is not supported"
-    exit 1
-fi
-
-
-export OPENAI_API_KEY=${OPENAI_API_KEY}
-export GEMINI_API_KEY=${GEMINI_API_KEY}
-export AZURE_API_ID=${AZURE_ID}
-export AZURE_API_SECRET=${AZURE_SECRET}
-export AZURE_API_ENDPOINT=${AZURE_ENDPOINT}
-
-
-# Benchmark and Tasks
 source config_tasks.sh
-BENCHMARK=${2}
-declare -n TASKS=$BENCHMARK
-if [ -z "${TASKS}" ]; then
-    echo "Benchmark: ${BENCHMARK} is not supported"
-    exit 1
-fi
 
-
-# Start server (you may want to run in other container.)
-if [ "$MODEL_FRAMEWORK" == "vllm" ]; then
-    python pred/serve_vllm.py \
-        --model=${MODEL_PATH} \
-        --tensor-parallel-size=${GPUS} \
-        --dtype bfloat16 \
-        --disable-custom-all-reduce \
-        &
-
-elif [ "$MODEL_FRAMEWORK" == "trtllm" ]; then
-    python pred/serve_trt.py \
-        --model_path=${MODEL_PATH} \
-        &
-
-elif [ "$MODEL_FRAMEWORK" == "sglang" ]; then
-    python -m sglang.launch_server \
-        --model-path ${MODEL_PATH} \
-        --tp ${GPUS} \
-        --port 5000 \
-        --enable-flashinfer \
-        &
-    # use sglang/test/killall_sglang.sh to kill sglang server if it hangs
-
-fi
-
-
-# Start client (prepare data / call model API / obtain final metrics)
-total_time=0
+# Fixed settings
+BENCHMARK="synthetic"
+MAX_SEQ_LENGTH=65536
 BUDGETS=(128 384 1024 4096)
-RECENT_SIZE=32
+MODELS=("llama-3.1-8b" "qwen-2.5-7b-1m")
+TASKS=("niah_single_3" "fwe" "vt")
 
-for BUDGET in "${BUDGETS[@]}"; do
-    HEAVY_HITTER_SIZE=$((BUDGET - RECENT_SIZE))
-    for MAX_SEQ_LENGTH in "${SEQ_LENGTHS[@]}"; do
+TEMPERATURE="0.0"
+TOP_P="1.0"
+TOP_K="32"
+
+total_time=0
+
+for MODEL_NAME in "${MODELS[@]}"; do
+    MODEL_CONFIG=$(MODEL_SELECT ${MODEL_NAME} "." ".")
+    IFS=":" read MODEL_PATH MODEL_TEMPLATE_TYPE MODEL_FRAMEWORK TOKENIZER_PATH TOKENIZER_TYPE \
+         OPENAI_API_KEY GEMINI_API_KEY AZURE_ID AZURE_SECRET AZURE_ENDPOINT <<< "$MODEL_CONFIG"
+
+    if [ -z "${MODEL_PATH}" ]; then
+        echo "Model: ${MODEL_NAME} is not supported"
+        exit 1
+    fi
+
+    for BUDGET in "${BUDGETS[@]}"; do
+        HEAVY_HITTER_SIZE=$((BUDGET - RECENT_SIZE))
+
         RESULTS_DIR="${ROOT_DIR}/${MODEL_NAME}/${BENCHMARK}/${MAX_SEQ_LENGTH}/budget${BUDGET}"
         DATA_DIR="${SCRIPT_DIR}/../../../../../benchmarks/Ruler_recall/${MODEL_NAME}/${BENCHMARK}/${MAX_SEQ_LENGTH}/data"
         PRED_DIR="${RESULTS_DIR}"
-        mkdir -p ${DATA_DIR}
         mkdir -p ${PRED_DIR}
-        
+
         for TASK in "${TASKS[@]}"; do
+            echo "  Model:  ${MODEL_NAME}"
+            echo "  Task:   ${TASK}"
+            echo "  Budget: ${BUDGET} (H2O=${HEAVY_HITTER_SIZE}, Recent=${RECENT_SIZE})"
+            echo "  SeqLen: ${MAX_SEQ_LENGTH}"
+
             start_time=$(date +%s)
             python pred/call_api.py \
                 --data_dir ${DATA_DIR} \
@@ -106,15 +66,21 @@ for BUDGET in "${BUDGETS[@]}"; do
                 --enable_h2o \
                 --check_recall \
                 ${STOP_WORDS}
+
+            if [ $? -ne 0 ]; then
+                echo "FAIL: ${MODEL_NAME} / ${TASK} / budget=${BUDGET}"
+            fi
             end_time=$(date +%s)
             time_diff=$((end_time - start_time))
             total_time=$((total_time + time_diff))
         done
-        
+
         python eval/evaluate.py \
             --data_dir ${PRED_DIR} \
             --benchmark ${BENCHMARK}
     done
 done
 
-echo "Total time spent on call_api: $total_time seconds"
+echo ""
+echo "ALL DONE!"
+echo "Total time spent: $total_time seconds"

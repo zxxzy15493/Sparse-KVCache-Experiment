@@ -11,8 +11,12 @@ from utils import load_data
 import torch
 import re
 import torch.distributed as dist
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from models_deepseek.deepseek_dist import DeepSeekModel
+
+_MAGICPIG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _MAGICPIG_ROOT not in sys.path:
+    sys.path.insert(0, _MAGICPIG_ROOT)
+
+from models_single.deepseek import DeepSeekModel
 from transformers import AutoTokenizer
 from examples import get_examples
 
@@ -155,7 +159,6 @@ def load_model(model_name, K, L, batch_size, max_length, max_new_tokens, device,
                 dtype=dtype,
                 RECALL=recall,
                 fixed_output_length=fixed_output_length,
-                measure_time=measure_time
               )
     else:
         raise ValueError(f"Unsupported model: {model_name}")

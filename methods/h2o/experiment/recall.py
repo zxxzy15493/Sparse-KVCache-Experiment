@@ -99,10 +99,10 @@ def streaming_inference_heavy_hitter(model, model_name_or_path, tokenizer, datas
         for sample in tqdm(remaining_samples):
             reset_sample_cache_state(model)
             
-            if "recall_test" in dataset_path:  
+            if "recall_test" in dataset_path:
                 prompt = prompt_format.format(**sample)
                 answers = sample.get("outputs", [])
-                all_classes = sample.get("all_classes", []) 
+                all_classes = sample.get("all_classes", [])
                 length = sample.get("length", len(sample.get("input", "")))
             elif "Longbench_recall" in dataset_path:
                 prompt = prompt_format.format(**sample)

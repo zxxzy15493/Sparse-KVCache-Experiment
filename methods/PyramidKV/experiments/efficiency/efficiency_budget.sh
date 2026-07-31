@@ -1,5 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+cd "$(dirname "$0")"
+METHODS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${METHODS_DIR}:${PYTHONPATH:-}"
 
 MODELS="meta-llama/Llama-3.1-8B-Instruct Qwen/Qwen2.5-7B-Instruct"
 

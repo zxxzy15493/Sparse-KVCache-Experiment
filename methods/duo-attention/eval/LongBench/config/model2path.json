@@ -1,0 +1,9 @@
+{
+    "Llama-2-7B-32K-Instruct": "togethercomputer/Llama-2-7B-32K-Instruct",
+    "Mistral-7B-Instruct-v0.2": "mistralai/Mistral-7B-Instruct-v0.2",
+    "Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-Instruct-v0.3",
+    "Llama-3-8B-Instruct-Gradient-1048k": "gradientai/Llama-3-8B-Instruct-Gradient-1048k",
+    "Meta-Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B-Instruct",
+    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
+    "glm-4-9b-chat-1m": "THUDM/glm-4-9b-chat-1m"
+}

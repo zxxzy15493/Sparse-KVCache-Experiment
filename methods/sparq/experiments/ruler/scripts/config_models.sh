@@ -21,7 +21,7 @@ MODEL_SELECT() {
             MODEL_TEMPLATE_TYPE="qwen2.5"
             MODEL_FRAMEWORK="hf"
             ;;
-        qwen2.5-7b-no1M)
+        qwen2.5-7b)
             MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
             MODEL_TEMPLATE_TYPE="qwen2.5"
             MODEL_FRAMEWORK="hf"

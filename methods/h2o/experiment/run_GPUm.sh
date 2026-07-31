@@ -4,7 +4,7 @@ Qwen="Qwen/Qwen2.5-7B-Instruct"
 Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Glm="glm-4-9b-chat-1m"
-DATA_ROOT="../../benchmarks/myinput.txt"
+DATA_ROOT="../../../benchmarks/myinput.txt"
 
 RECENT=32
 BUDGET=1024

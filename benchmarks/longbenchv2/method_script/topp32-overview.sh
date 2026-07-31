@@ -15,7 +15,7 @@ benchmark_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 for model in "${models[@]}"; do
     for budget in "${budgets[@]}"; do
         for threshold in "${thresholds[@]}"; do
-            python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --budget "$budget" --set "fixthreshold=$threshold"
+            python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --budget "$budget" --set "fixthreshold=$threshold" --cot
             python "$benchmark_dir/longbenchv2_eval.py" --model "$model" --method "$method" --budget "$budget" --set "fixthreshold=$threshold"
         done
     done

@@ -5,12 +5,6 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL2PATH = {
-    "qwen2.5-7b": os.path.join(
-        BASE_DIR, "Qwen2.5_7B_Instruct_1M.json"
-    ),
-    "llama-3.1-8b": os.path.join(
-        BASE_DIR, "Llama_3.1_8B_Instruct_128k_kv_out_v32_fit_o_best_pattern_v2.json"
-    ),
     "gradientai/Llama-3-8B-Instruct-262k": os.path.join(
         BASE_DIR, "Llama_3_8B_Instruct_262k_kv_out_v32_fit_o_best_pattern.json"
     ),
@@ -68,6 +62,9 @@ MODEL2PATH = {
     "gradientai/Llama-3-70B-Instruct-Gradient-1048k": os.path.join(
         BASE_DIR, "Llama_3_70B_Instruct_262k_kv_out_v32_fit_o_best_pattern.json"
     ),
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": os.path.join(
+        BASE_DIR, "DS_distill_Qwen2.5_1.5B_kv_out_v32_fit_o_best_pattern.json"
+    )
 }
 
 LEANKPATNS = {

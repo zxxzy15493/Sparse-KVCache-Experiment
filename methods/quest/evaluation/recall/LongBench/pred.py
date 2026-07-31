@@ -105,7 +105,7 @@ def run_longbench_pred(
   out_path: str,
 ):
 
-  if os.path.exists(out_path):
+  if out_path and os.path.exists(out_path):
     os.remove(out_path)
 
   for json_obj in tqdm(data, desc=f"Task={task_name}"):
@@ -216,13 +216,7 @@ def main():
 
 
   model_tag = os.path.basename(model_name_for_prompt.rstrip("/"))
-  out_root = os.path.join(args.output_dir + ("_e" if args.e else ""))
-  os.makedirs(out_root, exist_ok=True)
-  model_dir = os.path.join(out_root, model_tag)
-  os.makedirs(model_dir, exist_ok=True)
   suffix = f"budget{args.token_budget}"
-
-  out_path = os.path.join(model_dir, f"{task}-{suffix}.jsonl")
 
 
   run_longbench_pred(
@@ -235,7 +229,7 @@ def main():
     max_new_tokens=max_new_tokens,
     prompt_format=prompt_format,
     device=device,
-    out_path=out_path,
+    out_path=None,
   )
 
 

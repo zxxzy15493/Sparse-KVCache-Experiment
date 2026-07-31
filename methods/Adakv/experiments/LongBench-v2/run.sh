@@ -10,8 +10,6 @@ DEVICE=0
 # HeadKV-style parameters
 MAX_CAPACITY_PROMPTS=4096
 HEAD_CHOICE=1
-BETA=1.5
-TEMP=1.0
 KERNEL_SIZE=7
 SKIP=0
 NORMALIZE=0
@@ -42,8 +40,6 @@ run_eval() {
         --window_size ${WINDOW_SIZE} \
         --max_capacity_prompts ${MAX_CAPACITY_PROMPTS} \
         --head_choice ${head_choice} \
-        --beta ${BETA} \
-        --temp ${TEMP} \
         --kernel_size ${KERNEL_SIZE} \
         --skip ${SKIP} \
         $( [ ${NORMALIZE} -eq 1 ] && echo "--normalize" || echo ) \
@@ -53,7 +49,7 @@ run_eval() {
 }
 
 # Run the two HeadKV method/head_choice combinations
-run_eval "ReasonKV" "reason"
+run_eval "AdativeKV" "random"
 
 
 

@@ -1,6 +1,21 @@
+#!/usr/bin/env python
 #
+# Copyright 2008, Google Inc.
+# All rights reserved.
 #
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
 #
+#     * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following disclaimer
+# in the documentation and/or other materials provided with the
+# distribution.
+#     * Neither the name of Google Inc. nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -19,36 +34,37 @@
 from googletest.test import gtest_test_utils
 
 COMMAND = gtest_test_utils.GetTestExecutablePath(
-  'googletest-uninitialized-test_'
+    'googletest-uninitialized-test_'
 )
 
 
 def Assert(condition):
- if not condition:
-  raise AssertionError
+  if not condition:
+    raise AssertionError
 
 
 def AssertEq(expected, actual):
- if expected != actual:
-  print('Expected: %s' % (expected,))
-  print(' Actual: %s' % (actual,))
-  raise AssertionError
+  if expected != actual:
+    print('Expected: %s' % (expected,))
+    print('  Actual: %s' % (actual,))
+    raise AssertionError
 
 
 def TestExitCodeAndOutput(command):
- """Runs the given command and verifies its exit code and output."""
+  """Runs the given command and verifies its exit code and output."""
 
- p = gtest_test_utils.Subprocess(command)
- if p.exited and p.exit_code == 0:
-  Assert('IMPORTANT NOTICE' in p.output)
- Assert('InitGoogleTest' in p.output)
+  # Verifies that 'command' exits with code 1.
+  p = gtest_test_utils.Subprocess(command)
+  if p.exited and p.exit_code == 0:
+    Assert('IMPORTANT NOTICE' in p.output)
+  Assert('InitGoogleTest' in p.output)
 
 
 class GTestUninitializedTest(gtest_test_utils.TestCase):
 
- def testExitCodeAndOutput(self):
-  TestExitCodeAndOutput(COMMAND)
+  def testExitCodeAndOutput(self):
+    TestExitCodeAndOutput(COMMAND)
 
 
 if __name__ == '__main__':
- gtest_test_utils.Main()
+  gtest_test_utils.Main()

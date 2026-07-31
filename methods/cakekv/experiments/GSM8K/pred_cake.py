@@ -132,7 +132,8 @@ def parse_args(args=None):
 # Dataset
 # ---------------------------------------------------------------------------
 def load_dataset(pred_dir):
-    data_file = './data/gsm8k_test.jsonl'
+    _repo_root = Path(__file__).resolve().parents[4]
+    data_file = str(_repo_root / 'benchmarks' / 'gsm8k' / 'data' / 'gsm8k_test.jsonl')
     datas = load_data(data_file)
     for i, data in enumerate(datas):
         data.setdefault('index', i)

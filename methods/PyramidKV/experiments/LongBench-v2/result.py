@@ -1,12 +1,12 @@
 import os, json
 
 # files = os.listdir('results/Qwen2.5-7B-Instruct-1M/Full_Flash_Attn_RetroInfer/4096/')
-files = os.listdir('results1/')
+files = os.listdir('results/')
 output = ["Model\tOverall\tEasy\tHard\tShort\tMedium\tLong"]
 compensated = False
 
 for file in files:
-    filename = os.path.join('results1/', file)
+    filename = os.path.join('results/', file)
     try:
         pred_data = json.load(open(filename, encoding='utf-8'))
     except Exception as e:

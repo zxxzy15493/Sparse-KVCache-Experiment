@@ -201,8 +201,6 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time,
             budget=args.budget
             )
     elif 'Qwen' in model_path:
@@ -211,8 +209,6 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time,
             budget=args.budget
             )
     elif 'GLM' in model_path or 'glm' in model_path:
@@ -221,8 +217,6 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time
             )
     else:
         raise ValueError(f"Unsupported model: {model_path}")

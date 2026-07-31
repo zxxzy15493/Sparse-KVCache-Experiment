@@ -115,7 +115,7 @@ def parse_args(args=None):
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=1.0)
 
-    parser.add_argument("--token_budget", type=int, default=4096)
+    parser.add_argument("--token_budget", type=int, default=360)
     parser.add_argument("--chunk_size", type=int, default=16)
 
 

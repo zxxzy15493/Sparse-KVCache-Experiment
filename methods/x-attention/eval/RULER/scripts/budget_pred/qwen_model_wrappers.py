@@ -17,7 +17,7 @@ import logging
 import requests
 import torch
 from typing import Dict, List, Optional
-from xattn.src.budget_load_qwen import load_model, FastPrefillConfig
+from xattn.src.load_qwen import load_model, FastPrefillConfig
 
 class HuggingFaceModel:
     def __init__(self, name_or_path: str,fastprefillconfig:FastPrefillConfig, **generation_kwargs) -> None:

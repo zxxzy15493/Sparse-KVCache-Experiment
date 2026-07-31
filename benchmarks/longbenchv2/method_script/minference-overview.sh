@@ -13,7 +13,7 @@ benchmark_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 for model in "${models[@]}"; do
     for budget in "${budgets[@]}"; do
-        python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --budget "$budget"
+        python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --budget "$budget" --cot
         python "$benchmark_dir/longbenchv2_eval.py" --model "$model" --method "$method" --budget "$budget"
     done
 done

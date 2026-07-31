@@ -15,9 +15,10 @@ The repository implements and compares the following methods; each name links to
 
 The Full Attention, TopK, and TopP baselines are implemented in [`methods/pqcache/`](methods/pqcache/) alongside PQCache.
 
-- [`full_attention`](methods/pqcache/), [`topk`](methods/pqcache/), [`topk32`](methods/pqcache/), [`topp`](methods/pqcache/), [`topp32`](methods/pqcache/)
+- [`full_attention`](methods/pqcache/), [`topk(query per kv head)`](methods/pqcache/), [`topk32(query per query head)`](methods/pqcache/), [`topp`](methods/pqcache/), [`topp32`](methods/pqcache/)
 - [`h2o`](methods/h2o/), [`keyformer`](methods/keyformer/), [`snapkv`](methods/SnapKV/), [`streaming`](methods/streaming/)
-- [`quest`](methods/quest/), [`sparq`](methods/sparq/), [`xattention`](methods/x-attention/), [`flexprefill`](methods/flexPrefill/), [`retroinfer`](methods/retroinfer/), [`magicpig`](methods/magicpig/), [`pqcache`](methods/pqcache/),[`clusterkv`](methods/ClusterKV/),
+- [`quest`](methods/quest/), [`sparq`](methods/sparq/), [`xattention`](methods/x-attention/), [`flexprefill`](methods/flexPrefill/)
+- [`retroinfer`](methods/retroinfer/), [`magicpig`](methods/magicpig/), [`pqcache`](methods/pqcache/),[`clusterkv`](methods/ClusterKV/),
 - [`minference`](methods/minference/), [`headkv`](methods/HeadKV/), [`adakv`](methods/Adakv/), [`cakekv`](methods/cakekv/), [`duo-attention`](methods/duo-attention/), [`pyramidkv`](methods/PyramidKV/)
 
 The unified entry points use the following model abbreviations:
@@ -30,7 +31,7 @@ The unified entry points use the following model abbreviations:
 | `glm-4-9b-1m` | `zai-org/glm-4-9b-chat-1m` |
 | `ds-qwen-1.5b` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
 
-See [ENVIRONMENT.md](ENVIRONMENT.md) for environment setup and [PRE_AND_TRAIN.md](PRE_AND_TRAIN.md) for data preparation and preselection. After setup, activate the environment with:
+See [ENVIRONMENT.md](ENVIRONMENT.md) for environment setup and [PRE_AND_TRAIN.md](PRE_AND_TRAIN.md) for data preparation and pre-training. After setup, activate the environment with:
 
 ```bash
 conda activate kv
@@ -41,7 +42,7 @@ To override the default Hugging Face model location with a local path, use only 
 ## Codebase Architecture
 
 ```
-KVCache-SIGMOD/
+Sparse-KVCache-Experiment/
 ├── README.md                 # Repository overview and unified benchmark usage
 ├── ENVIRONMENT.md            # Environment setup
 ├── PRE_AND_TRAIN.md          # Dataset preparation and preselection
@@ -71,7 +72,7 @@ KVCache-SIGMOD/
     ├── quest/  sparq/  x-attention/  flexPrefill/  minference/
     ├── retroinfer/  magicpig/  duo-attention/
     ├── EVICT_EXPERIMENTS.md      # Experiment guide for eviction methods
-    └── Heuristic_EXPERIMENTS.md  # Experiment guide for heuristic selection methods
+    └── HEURISTIC_EXPERIMENT.md  # Experiment guide for heuristic selection methods
 ```
 
 `infer.py` and the benchmark prediction scripts share the same loader interface: a method name selects a loader in [`loaders/`](loaders/), which loads and patches its implementation in [`methods/`](methods/).  The benchmark-specific evaluation scripts then score the generated predictions.

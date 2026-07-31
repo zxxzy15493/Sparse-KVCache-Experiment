@@ -31,7 +31,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 # HeadKV imports
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from headkv.monkeypatch import replace_llama, replace_mistral, replace_qwen2
+from headkv.monkeypatch import replace_llama, replace_qwen2
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,8 @@ def parse_args(args=None):
 # Dataset
 # ---------------------------------------------------------------------------
 def load_dataset(pred_dir):
-    data_file = './data/gsm8k_test.jsonl'
+    _repo_root = Path(__file__).resolve().parents[4]
+    data_file = str(_repo_root / 'benchmarks' / 'gsm8k' / 'data' / 'gsm8k_test.jsonl')
     datas = load_data(data_file)
     for i, data in enumerate(datas):
         data.setdefault('index', i)
@@ -153,8 +154,6 @@ def load_model_and_tokenizer(model_name, device, args):
     # Apply HeadKV monkey-patch BEFORE loading the model
     if "llama" in model_name_lower:
         replace_llama(args.method)
-    elif "mistral" in model_name_lower:
-        replace_mistral(args.method)
     elif "qwen2" in model_name_lower or "qwen" in model_name_lower:
         replace_qwen2(args.method)
     else:

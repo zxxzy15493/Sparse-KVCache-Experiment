@@ -1,3 +1,14 @@
+# tensor_parallel internally uses pkg_resources (removed in setuptools>=70),
+# shim it with importlib.metadata for forward compatibility.
+import sys as _sys
+import importlib.metadata as _metadata
+class _PkgResourcesShim:
+    @staticmethod
+    def get_distribution(name):
+        ver = _metadata.version(name)
+        return type("Distribution", (), {"version": ver})()
+_sys.modules.setdefault("pkg_resources", _PkgResourcesShim)
+
 from .llama import (
     enable_llama_duo_attention_training,
     enable_llama_duo_attention_eval,

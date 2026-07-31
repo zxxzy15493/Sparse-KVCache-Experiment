@@ -4,7 +4,7 @@ Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen="Qwen/Qwen2.5-7B-Instruct"
 
-LONGBENCH_ROOT="../../benchmarks/Longbench_recall"
+LONGBENCH_ROOT="../../../benchmarks/Longbench_recall"
 
 
 run_eval() {

@@ -6,12 +6,34 @@ from functools import partial
 from typing import Any
 from .modules.forward import attn_forward, LlamaDecoderLayer_forward
 from .configs.model2path import MODEL2PATH
+from .utils import glm_forward
 
 def update_config_path(model_name: str = None):
         assert (
             model_name in MODEL2PATH
         ), f"The model {model_name} you specified is not supported. You are welcome to add it and open a PR :)"
         return MODEL2PATH[model_name]
+
+
+def patch_glm_4_1m(model, best_pattern, is_search=False):
+    Attention = model.transformer.encoder.layers[0].self_attention.__class__
+
+    attn_forward = partial(
+            glm_forward,
+            best_pattern=best_pattern,
+    )
+    
+    def update_module(m):
+        if isinstance(m, Attention):
+            m.num_layers = model.config.num_hidden_layers
+            m.forward = (
+                lambda self, *args, **kwargs: attn_forward(self, *args, **kwargs)
+            ).__get__(m, Attention)
+
+
+    model.apply(update_module)
+
+    return model
 
 class MInference:
     def __init__(
@@ -26,6 +48,9 @@ class MInference:
         with open(config_path, "r") as f:
             best_pattern = json.load(f)
 
+        if model.__class__.__name__ == "ChatGLMForConditionalGeneration":
+            model = patch_glm_4_1m(model, best_pattern)
+            return model
         Attention = model.model.layers[0].self_attn.__class__
         DecoderLayer = model.model.layers[0].__class__
 

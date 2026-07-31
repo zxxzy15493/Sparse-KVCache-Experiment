@@ -1,8 +1,11 @@
+cd "$(dirname "$0")"
+METHODS_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+export PYTHONPATH="${METHODS_DIR}:${PYTHONPATH:-}"
 
 
 
 MODEL_NAME="Qwen/Qwen2.5-7B-Instruct-1M"
-SAVE_DIR="results1"
+SAVE_DIR="results"
 CACHE_SIZE=4096
 WINDOW_SIZE=32
 GAMMA=200

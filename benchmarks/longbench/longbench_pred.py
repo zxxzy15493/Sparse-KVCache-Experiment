@@ -189,6 +189,8 @@ def run(args: argparse.Namespace) -> list[Path]:
                     handle.write("\n")
                     handle.flush()
             paths.append(path)
+            if args.method == "magicpig":
+                del model, tokenizer
     finally:
         if getattr(args, "_cleanup", None):
             args._cleanup()

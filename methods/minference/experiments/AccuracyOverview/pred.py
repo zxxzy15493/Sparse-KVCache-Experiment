@@ -218,17 +218,32 @@ def get_pred(model, tokenizer, data_sample, max_new_tokens, benchmark, out_path)
         index = data_sample.get("index", "")
 
     with open(out_path, "a", encoding="utf-8") as f:
-        json.dump(
-            {
-                "pred": pred,
-                "answers": data_sample["answers"], 
-                "all_classes": data_sample["all_classes"], 
-                "length": data_sample["length"],
-                "index": index,
-            },
-            f,
-            ensure_ascii=False,
-        )
+        if benchmark == "LongBench":
+            json.dump(
+                {
+                    "pred": pred,
+                    "answers": data_sample["answers"],
+                    "all_classes": data_sample.get("all_classes", None),
+                    "length": data_sample.get("length", len(pred)),
+                    "index": index,
+                },
+                f,
+                ensure_ascii=False,
+            )
+        else:
+            json.dump(
+                {
+                    "pred": pred,
+                    "outputs": data_sample["outputs"],
+                    "input": data_sample["input"],
+                    "others": data_sample.get("others", {}),
+                    "truncation": data_sample.get("truncation", -1),
+                    "length": data_sample.get("length", -1),
+                    "index": index,
+                },
+                f,
+                ensure_ascii=False,
+            )
         f.write("\n")
 
     torch.cuda.empty_cache()

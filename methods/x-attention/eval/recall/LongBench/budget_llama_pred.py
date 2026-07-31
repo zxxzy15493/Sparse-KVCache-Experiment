@@ -264,10 +264,6 @@ def get_pred(
       "all_classes": json_obj["all_classes"],
       "length": json_obj["length"],
     }
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "a", encoding="utf-8") as f:
-      json.dump(record, f, ensure_ascii=False)
-      f.write("\n")
   return preds
 
 
@@ -352,9 +348,6 @@ if __name__ == "__main__":
   else:
     datasets = [args.task]
 
-  out_dir = f"eval/LongBench/budget_pred/{args.model_name}"
-  os.makedirs(out_dir, exist_ok=True)
-
   for dataset in datasets:
     local_file = os.path.join(args.longbench_dir, f"{dataset}.jsonl")
     if not os.path.exists(local_file):
@@ -362,17 +355,10 @@ if __name__ == "__main__":
 
     data = load_dataset("json", data_files={"test": local_file})["test"]
 
-    if args.method == "full":
-      out_path = f"{out_dir}/{dataset}-full.jsonl"
-    elif args.method == "xattn":
-      out_path = f"{out_dir}/{dataset}-xattn-stride={args.stride}.jsonl"
-    else:
-      out_path = f"{out_dir}/{dataset}-{args.method}.jsonl"
-
     prompt_format = dataset2prompt[dataset]
     max_gen = dataset2maxlen[dataset]
     preds = get_pred(
       model, tokenizer, eos_token_ids, data,
       max_length, max_gen, prompt_format, dataset,
-      args.model_name, out_path,
+      args.model_name, None,
     )

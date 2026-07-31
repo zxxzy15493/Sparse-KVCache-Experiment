@@ -13,7 +13,7 @@ benchmark_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 for model in "${models[@]}"; do
     for sparsity in "${sparsities[@]}"; do
-        python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --set "sparsity=$sparsity"
+        python "$benchmark_dir/longbenchv2_pred.py" --method "$method" --model "$model" --set "sparsity=$sparsity" --cot
         python "$benchmark_dir/longbenchv2_eval.py" --model "$model" --method "$method" --set "sparsity=$sparsity"
     done
 done

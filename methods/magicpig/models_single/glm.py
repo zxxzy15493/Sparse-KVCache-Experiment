@@ -6,7 +6,6 @@ import flashinfer
 from .utils import layer_norm
 from .attnserver import LSHSparseAttnServer
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-import torch.distributed as dist
 
 
 def apply_glm_rotary_pos_emb(x: torch.Tensor, rope_cache: torch.Tensor) -> torch.Tensor:
@@ -61,8 +60,8 @@ class GLMLayer:
         self.post_attention_layernorm_variance_epsilon: float = 0.0
 
         self.layer_idx = layer_idx
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
+        self.rank = 0
+        self.world_size = 1
 
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
@@ -140,17 +139,12 @@ class GLMModel:
         device: str = "cuda:0",
         dtype=torch.bfloat16,
         RECALL: bool = False,
-        fixed_budget: int = 0,
         fixed_output_length: int = 0,
-        measure_time: bool = False,
     ) -> None:
         self.RECALL = RECALL
-        self.fixed_budget = fixed_budget
         self.fixed_output_length = fixed_output_length
-        self.measure_time = measure_time
-
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
+        self.rank = 0
+        self.world_size = 1
         self.batch_size = batch_size
         self.device = device
         self.dtype = dtype
@@ -194,7 +188,6 @@ class GLMModel:
                 dtype=self.dtype,
                 use_tensor_cores=True,
                 RECALL=self.RECALL,
-                fixed_budget=self.fixed_budget,
             )
 
         self.k_cache = torch.zeros(
@@ -233,6 +226,7 @@ class GLMModel:
 
         model_class = get_class_from_dynamic_module(class_ref, self.model_name)
         hf_model = model_class.from_pretrained(self.model_name, **common_kwargs)
+        
         self.embed_tokens = hf_model.transformer.embedding.word_embeddings.weight.detach().to(self.device)
         self.lm_head = hf_model.transformer.output_layer.weight.detach().to(self.device)
 
@@ -318,7 +312,6 @@ class GLMModel:
         down_proj: torch.Tensor,
     ):
         hidden_states = F.linear(attn_output, wo)
-        dist.all_reduce(hidden_states, dist.ReduceOp.SUM)
         hidden_states = residual + hidden_states
         residual = hidden_states
 
@@ -331,7 +324,6 @@ class GLMModel:
         up = F.linear(hidden_states, up_proj)
         hidden_states = F.silu(gate) * up
         hidden_states = F.linear(hidden_states, down_proj)
-        dist.all_reduce(hidden_states, dist.ReduceOp.SUM)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -432,7 +424,6 @@ class GLMModel:
 
                 h = h.reshape(bsz, q_len, self.hidden_size // self.world_size)
                 h = F.linear(h, buffer.wo)
-                dist.all_reduce(h, dist.ReduceOp.SUM)
                 residual[:, start:end, :].add_(h)
 
         if layer_idx >= 1:
@@ -451,7 +442,6 @@ class GLMModel:
                 up = F.linear(h, buffer.up_proj)
                 h = F.silu(gate) * up
                 h = F.linear(h, buffer.down_proj)
-                dist.all_reduce(h, dist.ReduceOp.SUM)
                 residual[:, start:end, :].add_(h)
 
         self.attention_server.fill(layer_idx, request_id, self.k_cache, self.v_cache, self.chunk_end[-1])
@@ -526,7 +516,6 @@ class GLMModel:
         max_tokens = max_tokens if self.fixed_output_length == 0 else self.fixed_output_length
         for k in range(max_tokens):
             input_ids = logits.argmax(dim=-1)
-            dist.broadcast(input_ids, 0)
             generated.append(input_ids[0].item())
             logits = self.inference(
                 input_ids=input_ids,

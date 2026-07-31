@@ -16,7 +16,7 @@ elif [ "$RATIO_OR_FIXED" -eq 0 ]; then
     MODE="ratio"
 else
     # ， mode 
-    echo $RATIO_OR_FIXED"
+    echo "$RATIO_OR_FIXED"
 fi
 if [ "$RECALL" -eq 1 ]; then
     RECALL="--recall"

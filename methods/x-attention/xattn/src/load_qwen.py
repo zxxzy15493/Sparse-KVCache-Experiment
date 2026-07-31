@@ -176,6 +176,7 @@ class FastPrefillConfig(dict):
     self.stride = stride
     self.p = p
 
+    #print(p)
     if threshold is not None:
       self.threshold = torch.ones((28, 28), device="cuda") * threshold
     elif p == 0.9:

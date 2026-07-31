@@ -3,7 +3,7 @@ set -euo pipefail
 
 method=duo-attention
 experiment=budget
-models=(llama-3.1-8b qwen-2.5-7b qwen-2.5-7b-1m glm-4-9b-1m ds-qwen-1.5b)
+models=(llama-3.1-8b qwen-2.5-7b glm-4-9b-1m)
 sparsities=(0.6 0.7 0.8 0.9)
 datasets=(narrativeqa qasper trec lcc)
 

@@ -15,7 +15,6 @@ LongBench=(
 )
 
 MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
-DATA_ROOT="LongBench"
 KEY_SIZE=992
 RECENT_SIZE=32
 TAU_INIT=1.0
@@ -28,7 +27,6 @@ for DATASET in "${LongBench[@]}"; do
 
     python keyformer.py \
         --model_name_or_path "$MODEL_PATH" \
-        --data_root "$DATA_ROOT" \
         --dataset_name "$DATASET" \
         --keyformer \
         --key_size "$KEY_SIZE" \

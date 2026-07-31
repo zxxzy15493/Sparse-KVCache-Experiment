@@ -10,6 +10,18 @@ BUDGET=${4}
 
 source ./config.sh
 
+# Convert numeric flags to CLI arguments (handle both "0"/"1" and "" cases)
+if [ "${RECALL}" = "1" ]; then
+    RECALL_FLAG="--recall"
+else
+    RECALL_FLAG=""
+fi
+if [ "${MEASURE_TIME}" = "1" ]; then
+    MEASURE_FLAG="--measure_time"
+else
+    MEASURE_FLAG=""
+fi
+
 PRED_DIR="./results/${MODEL_NAME}/${prefill_method}_${ATTN_TYPE}/${BUDGET}"
 LOG_DIR="./log/${MODEL_NAME}/${prefill_method}_${ATTN_TYPE}/${BUDGET}"
 
@@ -27,7 +39,11 @@ python -u ./pred.py \
     --budget_ratio ${BUDGET_RATIO} \
     --estimate_ratio ${ESTIMATE_RATIO} \
     --ratio_or_fixed ${RATIO_OR_FIXED} \
-    --fixed_output_length ${FIXED_OUTPUT_LENGTH}\
+    --fixed_output_length ${FIXED_OUTPUT_LENGTH} \
     --cot \
-    ${RECALL} \
-    ${MEASURE_TIME} >> "${LOG_DIR}/LongBenchV2.log" 2>&1
+    ${RECALL_FLAG} \
+    ${MEASURE_FLAG} > "${LOG_DIR}/LongBenchV2.log" 2>&1
+
+
+python -u ./result.py \
+    --save_dir ${PRED_DIR}

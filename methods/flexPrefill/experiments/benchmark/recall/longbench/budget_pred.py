@@ -103,7 +103,7 @@ def load_model_and_tokenizer(args,model_path: str, device: torch.device,use_flex
       "block_size": 128,
       "flex_prefill_gamma": args.p,
       "flex_prefill_tau": 0.1,
-      "flex_prefill_min_budget": 1024,
+      "flex_prefill_min_budget": 512,
       "flex_prefill_max_budget": None,
     }
 
@@ -148,7 +148,7 @@ def run_longbench_pred(
   out_path: str,
 ):
 
-  if os.path.exists(out_path):
+  if out_path and os.path.exists(out_path):
     os.remove(out_path)
   for i,json_obj in enumerate(tqdm(data, desc=f"Task={task_name}")):
     model.config.sample_id=f"{task_name}_{i}"
@@ -268,13 +268,6 @@ def main():
       data = load_dataset("THUDM/LongBench", task, split="test")
 
 
-  model_tag = os.path.basename(model_name_for_prompt.rstrip("/"))
-  out_root = os.path.join(args.output_dir + ("_e" if args.e else ""))
-  model_dir = os.path.join(out_root, model_tag)
-
-  out_path = os.path.join(model_dir, f"{task}-{args.p}.jsonl")
-
-
   run_longbench_pred(
     model=model,
     tokenizer=tokenizer,
@@ -285,7 +278,7 @@ def main():
     max_new_tokens=max_new_tokens,
     prompt_format=prompt_format,
     device=device,
-    out_path=out_path,
+    out_path=None,
   )
 
 

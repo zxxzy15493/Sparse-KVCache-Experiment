@@ -615,6 +615,7 @@ def forward(
     token_budget = seq_length
   token_budget = min(token_budget, seq_length)
 
+  #print(token_budget)
   selected_token_idx, selected_token_valid = quest_select_token_indices_from_chunks(
     chunk_scores=chunk_scores,
     token_budget=token_budget,

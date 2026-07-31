@@ -58,6 +58,8 @@ def reset_sample_cache_state(model, sample_idx=None):
             # Clean attention module
             if hasattr(module, "_recall_shadow_key"):
                 module._recall_shadow_key = None
+            if hasattr(module, "_recall_selected_indices"):
+                module._recall_selected_indices = None
             if hasattr(module, "_sel_tensor_cache"):
                 module._sel_tensor_cache = None
             # Clean kv_cluster (where _recall_key/_query/_selected_indices live)
@@ -101,7 +103,7 @@ def enable_pyramidkv_recall(model, **compress_args):
     enable_pyramid_recall(model, check_recall=True, **compress_args)
 
 def build_output_path(model_name, dataset_name, dataset_path, compress_args=None, task=None):
-    base_output = "./recall_results2"
+    base_output = "./recall_results"
 
     # Extract budget from compress_args
     budget_dir = "budget_full"

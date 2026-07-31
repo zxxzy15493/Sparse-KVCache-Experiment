@@ -61,7 +61,7 @@ class HuggingFaceModel:
             h2o_args.heavy_hitter_size = self.heavy_hitter_size
             h2o_args.recent_size = self.recent_size
             enable_h2o(curr_model, h2o_args)
-            print(f">>> [SUCCESS] H2OKVCache-LayerWise injected. {self.heavy_hitter_size}, {self.recent_size}")
+            print(f"H2OKVCache-LayerWise injected. {self.heavy_hitter_size}, {self.recent_size}")
 
         self.generation_kwargs = generation_kwargs
         self.stop = self.generation_kwargs.pop('stop')

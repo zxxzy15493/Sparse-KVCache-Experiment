@@ -71,7 +71,7 @@ run_one_model () {
         >> "${LOG_FILE}" 2>&1
 }
 
-# run_one_model "${LLAMA_MODEL}"
+run_one_model "${LLAMA_MODEL}"
 run_one_model "${QWEN_MODEL}"
 
 echo "All full attention overview latency experiments done. Results saved to ${CSV_FILE}"

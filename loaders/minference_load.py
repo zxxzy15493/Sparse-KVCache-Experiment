@@ -13,7 +13,7 @@ def load_model_and_tokenizer(args):
     from transformers.models.auto.auto_factory import _BaseAutoModelClass
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    minference_root = Path(__file__).resolve().parents[1] / "methods" / "MInference" 
+    minference_root = Path(__file__).resolve().parents[1] / "methods" / "minference" 
     if str(minference_root) not in sys.path:
         sys.path.insert(0, str(minference_root))
 

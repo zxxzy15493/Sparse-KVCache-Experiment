@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument("--input_max_token", type=int, default=4096)
     parser.add_argument("--max_new_tokens", type=int, default=32)
     parser.add_argument("--sparsity", type=float, default=0.5, choices=SPARSITIES)
-    parser.add_argument("--sink_size", type=int, default=64)
+    parser.add_argument("--sink_size", type=int, default=128)
     parser.add_argument("--recent_size", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--measure", type=int, default=1)

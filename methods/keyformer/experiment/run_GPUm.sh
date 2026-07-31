@@ -2,7 +2,7 @@
 
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
-DATA_ROOT="../../benchmarks/myinput.txt"
+DATA_ROOT="../../../benchmarks/myinput.txt"
 
 RECENT_SIZE=32
 BUDGET=1024

@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 from tqdm import tqdm
-from datasets import load_dataset
+# from datasets import load_dataset  # replaced with local jsonl file
 import torch
 import numpy as np
 import random
@@ -198,7 +198,8 @@ def main(args):
     out_file = os.path.join(args.save_dir, model_key + ".jsonl")
 
 
-    dataset = load_dataset('THUDM/LongBench-v2', split='train')
+    _repo_root = Path(__file__).resolve().parents[4]
+    dataset = [json.loads(line) for line in open(_repo_root / 'benchmarks' / 'longbenchv2' / 'filtered_longbench_v2_64k-192k.jsonl')]
     data_all = [{"_id": item["_id"], "domain": item["domain"], "sub_domain": item["sub_domain"], "difficulty": item["difficulty"], "length": item["length"], "question": item["question"], "choice_A": item["choice_A"], "choice_B": item["choice_B"], "choice_C": item["choice_C"], "choice_D": item["choice_D"], "answer": item["answer"], "context": item["context"]} for item in dataset]
 
     has_data = {}

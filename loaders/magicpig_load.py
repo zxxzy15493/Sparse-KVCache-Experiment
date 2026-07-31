@@ -46,24 +46,30 @@ def load_model_and_tokenizer(args):
 
     from transformers import AutoTokenizer
     from models_single.llama import LlamaModel
-    from models_single.glm_dist import GLMModel
-    from models_single.qwen_dist import Qwen2Model
+    from models_single.qwen import Qwen2Model
+    from models_single.glm import GLMModel
+    from models_single.deepseek import DeepSeekModel
     if args.dataset == "longbenchv2":
         K=9
         L=115
+        max_len = 192*1024
     elif args.dataset == "gsm8k":
         K=7
         L=200
+        max_len = 6000
     elif args.dataset == "ruler":
         K, L = _magicpig_kl_config(args, f"ruler-{args.max_seq_length}")
+        max_len = args.max_seq_length + 4096
     else:
         K, L = _magicpig_kl_config(args, args.dataset)
+        max_len = 65536
 
-    max_len = MODEL_CONTEXT_LENGTHS[args.model]
-
-    if 'Llama' in args.model_name:
+    
+    # print K_L 参数
+    print(f"run {args.dataset}, use K = {K}, L = {L} on {args.model_path}")
+    if 'llama' in args.model_path.lower():
         llm = LlamaModel(
-                model_name=args.model_name, 
+                model_name=args.model_path, 
                 K=K,
                 L=L,
                 batch_size=1,
@@ -71,9 +77,20 @@ def load_model_and_tokenizer(args):
                 device="cuda:0", 
                 dtype=torch.bfloat16,
                 )
-    elif 'Qwen' in args.model_name:
+    elif 'deepseek' in args.model_path.lower():
+        llm = DeepSeekModel(
+                model_name=args.model_path, 
+                K=K,
+                L=L,
+                batch_size=1,
+                max_length=max_len, 
+                device="cuda:0", 
+                dtype=torch.bfloat16,
+                generation_buffer=3500
+                )
+    elif 'qwen' in args.model_path.lower():
         llm = Qwen2Model(
-                model_name=args.model_name, 
+                model_name=args.model_path, 
                 K=K,
                 L=L,
                 batch_size=1,
@@ -81,9 +98,9 @@ def load_model_and_tokenizer(args):
                 device="cuda:0", 
                 dtype=torch.bfloat16,
               )
-    elif 'glm' in args.model_name.lower():
+    elif 'glm' in args.model_path.lower():
         llm = GLMModel(
-                model_name=args.model_name,
+                model_name=args.model_path,
                 K=K,
                 L=L,
                 batch_size=1,
@@ -92,7 +109,7 @@ def load_model_and_tokenizer(args):
                 dtype=torch.bfloat16,
               )
     else:
-        raise ValueError(f"Unsupported model: {args.model_name}")
+        raise ValueError(f"Unsupported model: {args.model_path}")
 
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)

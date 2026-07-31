@@ -15,7 +15,7 @@ import math
 import time
 import numpy as np
 from typing import List
-from transformers.models.llama.modeling_llama import repeat_kv
+from transformers.models.llama.modeling_llama import repeat_kv, apply_rotary_pos_emb
 from pyramidkv.pyramidkv_utils import PyramidKVCluster, init_pyramidkv
 
 # ============================================================
@@ -231,6 +231,8 @@ def make_recall_class_forward(original_pyramidkv_forward, num_layers, attention_
 
             # Set shadow key for this layer
             self._recall_shadow_key = kv._recall_key
+            # Save selected_indices on attention module for decode steps (kv_cluster is recreated each step)
+            self._recall_selected_indices = kv._selected_indices
 
             # Last layer: compute step 0 recall for ALL layers
             if self.layer_idx == num_layers - 1:
@@ -258,7 +260,9 @@ def make_recall_class_forward(original_pyramidkv_forward, num_layers, attention_
 
         # ---- Post-decode: extend shadow key + compute recall ----
         if not is_prefill:
-            # key/query/selected_indices are on kv_cluster from _single_pass_update_kv
+            # kv_cluster is freshly created by init_pyramidkv each step during decode,
+            # and update_kv is never called in the decode path, so we compute the
+            # current token's key/query from hidden_states ourselves.
             kv = self.kv_cluster
             # Only layer 0 advances the global step (same as CakeKV)
             if self.layer_idx == 0:
@@ -270,19 +274,30 @@ def make_recall_class_forward(original_pyramidkv_forward, num_layers, attention_
             if step >= len(current_sample_stats):
                 current_sample_stats.append({})
 
+            # Compute current token key/query from hidden_states
+            bsz, q_len, hdim = hidden_states.shape
+            cur_q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            cur_k = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            # Apply RoPE — use value_states for cos/sin (any RoPE'd tensor works)
+            cos, sin = self.rotary_emb(cur_k, position_ids[:, -q_len:] if position_ids is not None else None)
+            cur_q, cur_k = apply_rotary_pos_emb(cur_q, cur_k, cos, sin)
+
             # Extend shadow key
-            new_key = kv._recall_key[:, :, -1:, :]  # [1, num_kv_heads, 1, head_dim]
-            self._recall_shadow_key = torch.cat([self._recall_shadow_key, new_key], dim=2)
+            self._recall_shadow_key = torch.cat([self._recall_shadow_key, cur_k], dim=2)
+
+            # The new decode token is always kept in KV cache — add it to selected set
+            new_pos = self._recall_shadow_key.shape[2] - 1
+            for s in self._recall_selected_indices:
+                s.add(new_pos)
 
             # Compute recall: this layer's query vs full shadow key
-            q = kv._recall_query[:, :, -1:, :]       # [1, num_heads, 1, head_dim]
             sk = repeat_kv(self._recall_shadow_key, self.num_key_value_groups)
-            attn = (q.float() @ sk.float().transpose(-1, -2)) / math.sqrt(self.head_dim)
+            attn = (cur_q.float() @ sk.float().transpose(-1, -2)) / math.sqrt(self.head_dim)
             probs = F.softmax(attn, dim=-1)[0, :, 0, :]
 
-            expanded = [kv._selected_indices[h // self.num_key_value_groups]
+            expanded = [self._recall_selected_indices[h // self.num_key_value_groups]
                         for h in range(self.num_heads)]
-            kv_len_comp = max(len(s) for s in kv._selected_indices)
+            kv_len_comp = max(len(s) for s in self._recall_selected_indices)
             metrics, cache = _compute_recall_per_head(probs, expanded, kv_len_comp,
                                                        sel_tensor_cache=self._sel_tensor_cache)
             self._sel_tensor_cache = cache

@@ -4,7 +4,7 @@ Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen="Qwen/Qwen2.5-7B-Instruct"
 
-LONGBENCH_ROOT="../../benchmarks/Longbench_recall"
+LONGBENCH_ROOT="../../../benchmarks/Longbench_recall"
 
 
 run_eval() {
@@ -12,13 +12,11 @@ run_eval() {
     local DATA_ROOT=$2
     local DATASET_NAME=$3
 
-    echo "=========================================================="
     echo "Starting Keyformer Experiment:"
     echo "   Model   : $MODEL_PATH"
     echo "   Dataset : $DATASET_NAME"
     echo "   Budget  : Total=$((KEY_SIZE + RECENT_SIZE)) (KeySize=$KEY_SIZE, Recent=$RECENT_SIZE)"
     echo "   Root    : $DATA_ROOT"
-    echo "=========================================================="
 
     python recall.py \
         --model_name_or_path "$MODEL_PATH" \

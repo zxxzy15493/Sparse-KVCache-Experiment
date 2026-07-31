@@ -19,10 +19,10 @@ _MAGICPIG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "
 if _MAGICPIG_ROOT not in sys.path:
     sys.path.insert(0, _MAGICPIG_ROOT)
 
-from models.deepseek import DeepSeekModel
-from models.glm_dist import GLMModel
-from models.llama_dist import LlamaModel
-from models.qwen_dist import Qwen2Model
+from models_single.deepseek import DeepSeekModel
+from models_single.glm import GLMModel
+from models_single.llama import LlamaModel
+from models_single.qwen import Qwen2Model
 from utils import load_data
 
 
@@ -189,9 +189,7 @@ def load_model(model_name, K, L, batch_size, max_length, max_new_tokens, device,
         "device": device,
         "dtype": dtype,
         "RECALL": recall,
-        "fixed_budget": args.fixed_budget,
         "fixed_output_length": args.fixed_output_length,
-        "measure_time": measure_time,
     }
 
     if "llama" in model_name_lower:
@@ -225,17 +223,32 @@ def get_pred(llm, tokenizer, data_sample, max_new_tokens, benchmark, out_path, d
 
     if dist.get_rank() == 0:
         with open(out_path, "a", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "pred": pred,
-                    "answers": answers,
-                    "all_classes": data_sample.get("all_classes", None),
-                    "length": data_sample.get("length", -1),
-                    "index": index,
-                },
-                f,
-                ensure_ascii=False,
-            )
+            if benchmark == "LongBench":
+                json.dump(
+                    {
+                        "pred": pred,
+                        "answers": data_sample["answers"],
+                        "all_classes": data_sample.get("all_classes", None),
+                        "length": data_sample.get("length", len(pred)),
+                        "index": index,
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
+            else:
+                json.dump(
+                    {
+                        "pred": pred,
+                        "outputs": data_sample["outputs"],
+                        "input": data_sample["input"],
+                        "others": data_sample.get("others", {}),
+                        "truncation": data_sample.get("truncation", -1),
+                        "length": data_sample.get("length", -1),
+                        "index": index,
+                    },
+                    f,
+                    ensure_ascii=False,
+                )
             f.write("\n")
 
     attention_server = getattr(llm, "attention_server", None)

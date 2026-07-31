@@ -1,3 +1,4 @@
 budget: 1024
-sink_size: 64
+sparsity: 0.5
+sink_size: 128
 recent_size: 256

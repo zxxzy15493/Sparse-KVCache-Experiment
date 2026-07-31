@@ -13,6 +13,9 @@ set -euo pipefail
 # Config
 # =========================
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "${SCRIPT_DIR}"
+
 RECALL_SCRIPT=${RECALL_SCRIPT:-recall.sh}
 ANALYZE_SCRIPT=${ANALYZE_SCRIPT:-analyze_recall.py}
 RUN_ANALYZE=${RUN_ANALYZE:-1}

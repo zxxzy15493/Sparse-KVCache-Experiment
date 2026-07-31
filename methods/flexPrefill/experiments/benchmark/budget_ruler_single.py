@@ -142,7 +142,7 @@ def main():
         "block_size": 128,
         "flex_prefill_gamma": args.p,
         "flex_prefill_tau": 0.1,
-        "flex_prefill_min_budget": 1024,
+        "flex_prefill_min_budget": 512,
         "flex_prefill_max_budget": None,
     }
     patch_model(model, "flex_prefill", flex_prefill_config)
@@ -188,7 +188,7 @@ def main():
             )
         elif "qwen" in model_name.lower():
             save_dir = os.path.join(
-                flex_root, "outputs_budget", "qwen2.5-7b", str(args.p))
+                flex_root, "outputs_budget", "qwen-2.5-7b-1m", str(args.p))
             task_file = os.path.join(
                 ruler_data_root,
                 "qwen-2.5-7b-1m",

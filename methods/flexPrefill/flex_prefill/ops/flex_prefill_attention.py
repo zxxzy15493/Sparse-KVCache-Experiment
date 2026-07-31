@@ -2337,7 +2337,7 @@ def get_active_blocks(
 
   last_q = q[:, -block_size:, :, :] / math.sqrt(head_dim)
 
-
+  #print(gamma)
 
   if not gqa_interleave:
 

@@ -102,15 +102,11 @@ class Qwen2Model:
         device :str = 'cuda:0',
         dtype = torch.float16,
         RECALL: bool = False,
-        fixed_budget: int = 0,
         fixed_output_length: int = 0,
-        measure_time: bool = False
         ) -> None:
         
         self.RECALL = RECALL
-        self.fixed_budget = fixed_budget
         self.fixed_output_length = fixed_output_length
-        self.measure_time = measure_time
 
 
         self.prefill_latency = 0
@@ -132,7 +128,7 @@ class Qwen2Model:
         self.num_heads = self.config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
         self.init_parameters()
-        self.num_key_value_heads = self.config.num_key_value_head
+        self.num_key_value_heads = self.config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.max_position_embeddings = self.config.max_position_embeddings
         self.rope_theta = self.config.rope_theta

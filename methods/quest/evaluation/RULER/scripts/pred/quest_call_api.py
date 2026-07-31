@@ -42,10 +42,6 @@ import time
 from tqdm import tqdm
 from pathlib import Path
 import traceback
-#from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-#from evaluation.quest_attention import enable_quest_attention_eval
-from evaluation.llama import enable_tuple_kv_cache_for_llama 
-from evaluation.mistral import enable_tuple_kv_cache_for_mistral
 
 
 SERVER_TYPES = (
@@ -257,13 +253,6 @@ def main():
     print(f'Predict {args.task} \nfrom {task_file}\nto {pred_file}')
     pred_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load data
-    # if os.path.exists(pred_file):
-    #     pred_index = [sample['index'] for sample in read_manifest(pred_file)]
-    #     data = [sample for sample in read_manifest(task_file) if sample['index'] not in pred_index]
-    # else:
-    #     data = read_manifest(task_file)
-
 ####
     # Load data
     if os.path.exists(pred_file):
@@ -271,15 +260,6 @@ def main():
         data = [sample for sample in read_manifest(task_file) if sample['index'] not in pred_index]
     else:
         data = read_manifest(task_file)
-
-    #max_samples=5
-    # Limit number of samples to run
-    
-    #data = data[:max_samples]
-
-    #print(f"Total samples to run: {len(data)}")
-
-
 
     # Load api
     llm = get_llm(config['tokens_to_generate'])
@@ -297,7 +277,6 @@ def main():
         # quest 
     enable_quest_attention_eval(llm.model, args)# quest attention
     
-    #enable_tuple_kv_cache_for_llama()   #  llama
 
     def get_output(idx_list, index_list, input_list, outputs_list, others_list, truncation_list, length_list):
         nonlocal llm

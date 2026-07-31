@@ -2,13 +2,13 @@
 
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
-DATASET="../../benchmarks/myinput.txt"
+DATASET="../../../benchmarks/myinput.txt"
 COMPRESS_CONFIG_DIR="./config"
 
 BUDGET=1024
 COMPRESS_ARGS_PATH="${COMPRESS_CONFIG_DIR}/ablation_c${BUDGET}_w32_k7_maxpool.json"
 
-TEST_LENS=(262144)
+TEST_LENS=(4096 8192 16384 32768 65536 131072 262144)
 
 
 MODELS=("$Llama" "$Qwen_1M")

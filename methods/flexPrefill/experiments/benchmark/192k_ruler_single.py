@@ -171,7 +171,7 @@ def main():
             )
         elif "qwen" in model_name.lower():
             save_dir = os.path.join(
-                flex_root, "outputs", "ruler", "qwen2.5-7b", "synthetic")
+                flex_root, "outputs", "ruler", "qwen-2.5-7b-1m", "synthetic")
             task_file = os.path.join(
                 ruler_data_root,
                 "qwen-2.5-7b-1m",

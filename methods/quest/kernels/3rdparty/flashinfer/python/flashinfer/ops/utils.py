@@ -1,12 +1,12 @@
 class RotaryMode:
-  NONE = 0
-  LLAMA = 1
+    NONE = 0
+    LLAMA = 1
 
-  FORMAT2STR = {0: "NONE", 1: "LLAMA"}
+    FORMAT2STR = {0: "NONE", 1: "LLAMA"}
 
 
 class TensorLayout:
-  NHD = 0
-  HND = 1
+    NHD = 0
+    HND = 1
 
-  FORMAT2STR = {0: "NHD", 1: "HND"}
+    FORMAT2STR = {0: "NHD", 1: "HND"}

@@ -18,18 +18,18 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 from benchmarks.common import (
-    METHODS, MODELS, ROOT, build_chat_prompt,
+    METHODS, MODELS, build_chat_prompt,
     method_defaults, middle_truncate, model_context_length, parse_set, output_path, run_name,
 )
 from loaders import load_model_and_tokenizer
 
 
-PROMPTS = ROOT / "methods" / "ClusterKV" / "LongBenchV2" / "prompts"
+PROMPTS = Path(__file__).parent / "prompts"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified LongBenchV2 predictor")
-    parser.add_argument("--method", choices=METHODS, default="pqcache")
+    parser.add_argument("--method", choices=METHODS, default="snapkv")
     parser.add_argument("--model", choices=MODELS, default="llama-3.1-8b")
     parser.add_argument("--budget", type=int)
     parser.add_argument("--dataset", nargs="+", default=None)
@@ -147,9 +147,30 @@ def run(args: argparse.Namespace) -> Path:
                 prompt = middle_truncate(tokenizer, base_prompt(templates, item, args), max_context)
                 response_cot = None
                 if args.cot:
-                    response_cot = generate(model, tokenizer, args, prompt, args.cot_max_new_tokens)
-                    prompt = middle_truncate(tokenizer, fill_template(templates["0shot_cot_ans"], item, item["context"], response_cot), max_context)
-                json.dump(record(item, generate(model, tokenizer, args, prompt, args.max_new_tokens), response_cot), handle, ensure_ascii=False)
+                    response_cot = generate(
+                        model,
+                        tokenizer,
+                        args,
+                        prompt,
+                        args.cot_max_new_tokens,
+                    )
+                    answer_prompt = fill_template(
+                        templates["0shot_cot_ans"],
+                        item,
+                        item["context"],
+                        response_cot,
+                    )
+                    prompt = middle_truncate(tokenizer, answer_prompt, max_context)
+
+                response = generate(
+                    model,
+                    tokenizer,
+                    args,
+                    prompt,
+                    args.max_new_tokens,
+                )
+                output = record(item, response, response_cot)
+                json.dump(output, handle, ensure_ascii=False)
                 handle.write("\n")
                 handle.flush()
     finally:

@@ -29,11 +29,6 @@ _file_lock = threading.Lock()
 layerID=1
 
 
-
-
-
-
-
 def local_heavy_hitter_mask(attn_weights, token_budget, chunk_size):
 
 
@@ -356,11 +351,7 @@ def forward(
 
   token_budget = min(kv_seq_len, self.token_budget)
 
-  # =========================
-
-
-  # =========================
-
+  #print(token_budget)
   sign = torch.where(
     query_states > 0,
     torch.ones_like(query_states),

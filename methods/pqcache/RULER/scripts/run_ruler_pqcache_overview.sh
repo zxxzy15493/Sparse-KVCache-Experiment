@@ -6,8 +6,8 @@ EXP_NAME=overview
 PQ_BUDGET=1024
 PQ_RECENT_SIZE=32
 PQ_SINK_SIZE=16
-PQ_N_SUBVEC_64K=8
-PQ_N_SUBBITS_64K=4
+PQ_N_SUBVEC_64K=4
+PQ_N_SUBBITS_64K=8
 SEQ_LENGTHS="4096 8192 16384 32768 65536"
 TASKS="niah_single_1 niah_single_2 niah_single_3 niah_multikey_1 niah_multikey_2 niah_multikey_3 niah_multivalue niah_multiquery vt cwe fwe qa_1 qa_2"
 
@@ -21,10 +21,6 @@ export PQ_N_SUBBITS_64K
 export SEQ_LENGTHS
 export TASKS
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
-export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 

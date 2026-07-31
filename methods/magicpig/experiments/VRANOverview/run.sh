@@ -15,19 +15,19 @@
 #                 K_L: 8 135
 # }
 
-# bash VRAMOverview.sh llama3.1-8b-Instruct 9 150 1024 2 64
-# bash VRAMOverview.sh llama3.1-8b-Instruct 7 200 1024 2 512
-# bash VRAMOverview.sh llama3.1-8b-Instruct 9 150 1024 4096 64
-# bash VRAMOverview.sh llama3.1-8b-Instruct 7 200 1024 4096 512
-# bash VRAMOverview.sh llama3.1-8b-Instruct 10 90 65536 2 512
-# bash VRAMOverview.sh llama3.1-8b-Instruct 8 135 65536 2 8192
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 9 150 1024 2 64
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 7 200 1024 2 512
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 9 150 1024 4096 64
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 7 200 1024 4096 512
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 10 90 65536 2 512
+# bash VRAMOverview.sh llama-3.1-8b-Instruct 8 135 65536 2 8192
 
-bash VRAMOverview.sh qwen2.5-7b-1m 9 150 1024 2 64
-bash VRAMOverview.sh qwen2.5-7b-1m 7 200 1024 2 512
-bash VRAMOverview.sh qwen2.5-7b-1m 9 150 1024 4096 64
-bash VRAMOverview.sh qwen2.5-7b-1m 7 200 1024 4096 512
-bash VRAMOverview.sh qwen2.5-7b-1m 10 90 65536 2 512    
-bash VRAMOverview.sh qwen2.5-7b-1m 8 135 65536 2 8192
+bash VRAMOverview.sh qwen-2.5-7b-1m 9 150 1024 2 64
+bash VRAMOverview.sh qwen-2.5-7b-1m 7 200 1024 2 512
+bash VRAMOverview.sh qwen-2.5-7b-1m 9 150 1024 4096 64
+bash VRAMOverview.sh qwen-2.5-7b-1m 7 200 1024 4096 512
+bash VRAMOverview.sh qwen-2.5-7b-1m 10 90 65536 2 512    
+bash VRAMOverview.sh qwen-2.5-7b-1m 8 135 65536 2 8192
 
 
 

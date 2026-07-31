@@ -1,0 +1,11 @@
+__pycache__/
+AGENT.md
+.agents/
+.claude/
+.codex/
+.vscode/
+build/
+*.egg-info
+*.log
+*report/
+*__pycache__*

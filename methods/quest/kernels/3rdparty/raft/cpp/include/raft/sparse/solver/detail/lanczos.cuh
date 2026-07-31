@@ -593,7 +593,7 @@ static int lanczosRestart(raft::resources const& handle,
   memcpy(work_host, beta_host, (iter - 1) * sizeof(value_type_t));
   Lapack<value_type_t>::sterf(iter, ritzVals_host, work_host);
 
-
+  // Debug: Print largest eigenvalues
   // for (int i = iter-iter_new; i < iter; ++i)
   //  std::cout <<*(ritzVals_host+i)<< " ";
   // std::cout <<std::endl;
@@ -1279,12 +1279,12 @@ int computeLargestEigenvectors(
 
   index_type_t top_eigenparis_idx_offset = *effIter - nEigVecs;
 
-
+  // Debug : print nEigVecs largest eigenvalues
   // for (int i = top_eigenparis_idx_offset; i < *effIter; ++i)
   //  std::cout <<*(work_host+(2*(*effIter)+i))<< " ";
   // std::cout <<std::endl;
 
-
+  // Debug : print nEigVecs largest eigenvectors
   // for (int i = top_eigenparis_idx_offset; i < *effIter; ++i)
   //{
   //  for (int j = 0; j < *effIter; ++j)

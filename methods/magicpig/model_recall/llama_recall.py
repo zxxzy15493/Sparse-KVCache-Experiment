@@ -89,7 +89,7 @@ class LLMLayer:
         self.up_proj = self.up_proj.to(device, non_blocking=True)
         self.down_proj =  self.down_proj.to(device, non_blocking=True)
 
-class LLM:
+class LlamaModel:
     def __init__(self, 
         model_name: str,
         K: int = 0,

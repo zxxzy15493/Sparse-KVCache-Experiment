@@ -16,13 +16,12 @@ LongBench=(
 
 Qwen="Qwen2.5-7B-Instruct"
 Llama="Llama-3.1-8B-Instruct"
-DATASET="Longbench"
-COMPRESS_CONFIG_DIR="./config"
+DATASET="LongBench"
 BUDGETS=(128 256 512 1024)
 
 
 for BUDGET in "${BUDGETS[@]}"; do
-    COMPRESS_ARGS_PATH="${COMPRESS_CONFIG_DIR}/ablation_c${BUDGET}_w32_k7_maxpool.json"
+    COMPRESS_ARGS_PATH="./config/ablation_c${BUDGET}_w32_k7_maxpool.json"
 
     for DATASET_NAME in "${LongBench[@]}"; do
 
@@ -32,7 +31,8 @@ for BUDGET in "${BUDGETS[@]}"; do
             --model "$Llama" \
             --dataset "$DATASET" \
             --dataset_name "$DATASET_NAME" \
-            --compress_args_path "$COMPRESS_ARGS_PATH"
+            --compress_args_path "$COMPRESS_ARGS_PATH" \
+            --budget "$BUDGET"
 
         if [ $? -eq 0 ]; then
             echo -e "\n$DATASET_NAME (budget=$BUDGET) success"

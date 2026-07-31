@@ -90,9 +90,7 @@ class LlamaModel:
         device :str = 'cuda:0',
         dtype = torch.bfloat16,
         RECALL: bool = False,
-        fixed_budget: int = 0,
         fixed_output_length: int = 0,
-        measure_time: bool = False
         ) -> None:
         
         self.generate_token = 0
@@ -107,7 +105,6 @@ class LlamaModel:
 
         self.RECALL = RECALL
         self.fixed_output_length = fixed_output_length
-        self.measure_time = measure_time
 
         self.batch_size = batch_size
         self.device = device

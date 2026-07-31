@@ -41,8 +41,9 @@ RULER_DATA_ROOT = "../../../../benchmarks/ruler/benchmark_root"
 
 # Local model path -> short name for Ruler data directory
 LOCAL_PATH_TO_SHORT = {
-    "llama-3.1": "llama3.1-8b",
-    "qwen-2.5": "qwen2.5-7b",
+    "llama-3.1": "llama-3.1-8b",
+    "qwen-2.5-7b-1m": "qwen-2.5-7b-1m",
+    "qwen-2.5": "qwen-2.5-7b",
     "glm": "glm-4-9b",
 }
 
@@ -146,7 +147,8 @@ def load_dataset(args):
             raise ValueError(f"Cannot determine model short name for: {model_name}. "
                              f"Add it to LOCAL_PATH_TO_SHORT in pred.py.")
 
-        task_file = f'{RULER_DATA_ROOT}/{model_short}/synthetic/65536/data/{task}/validation.jsonl'
+        max_len = args.max_len or 65536
+        task_file = f'{RULER_DATA_ROOT}/{model_short}/synthetic/{max_len}/data/{task}/validation.jsonl'
         if not os.path.exists(task_file):
             raise FileNotFoundError(f"Synthetic task file not found: {task_file}")
 
@@ -276,17 +278,32 @@ def get_pred(llm, data_sample, max_new_tokens, out_path, args):
         index = data_sample.get("index", "")
 
     with open(out_path, "a", encoding="utf-8") as f:
-        json.dump(
-            {
-                "pred": pred,
-                "answers": data_sample["answers"],
-                "all_classes": data_sample["all_classes"],
-                "length": data_sample["length"],
-                "index": index,
-            },
-            f,
-            ensure_ascii=False,
-        )
+        if args.benchmark == "LongBench":
+            json.dump(
+                {
+                    "pred": pred,
+                    "answers": data_sample["answers"],
+                    "all_classes": data_sample.get("all_classes", None),
+                    "length": data_sample.get("length", len(pred)),
+                    "index": index,
+                },
+                f,
+                ensure_ascii=False,
+            )
+        else:
+            json.dump(
+                {
+                    "pred": pred,
+                    "outputs": data_sample["outputs"],
+                    "input": data_sample["input"],
+                    "others": data_sample.get("others", {}),
+                    "truncation": data_sample.get("truncation", -1),
+                    "length": data_sample.get("length", -1),
+                    "index": index,
+                },
+                f,
+                ensure_ascii=False,
+            )
         f.write("\n")
 
     torch.cuda.empty_cache()

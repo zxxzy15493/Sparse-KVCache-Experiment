@@ -48,7 +48,7 @@ from duo_recall import (
 # ============================================================
 # Default output base
 # ============================================================
-base_output = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recall_results1")
+base_output = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recall_results")
 
 
 def parse_args():
@@ -76,7 +76,7 @@ def parse_args():
     parser.add_argument('--max_gen', type=int, default=64,
                         help="Max generation length")
     parser.add_argument('--output_dir', type=str, default=None,
-                        help="Output directory (default: recall_results1/<model>/<dataset>)")
+                        help="Output directory (default: recall_results/<model>/<dataset>)")
 
     return parser.parse_args()
 
@@ -104,8 +104,16 @@ def get_output_path(args):
     if "/" in model_short:
         model_short = model_short.split("/")[-1]
 
-    sub_dir = os.path.basename(os.path.dirname(args.dataset)) if args.dataset else ""
     sparsity_dir = f"sp{args.sparsity}"
+
+    # Separate RULER and LongBench into distinct subdirectories
+    if args.task:
+        sub_dir = "ruler"
+    elif args.dataset_name:
+        sub_dir = "longbench"
+    else:
+        sub_dir = os.path.basename(os.path.dirname(args.dataset)) if args.dataset else ""
+
     output_dir = os.path.join(base_output, model_short, sparsity_dir, sub_dir)
     if args.output_dir is not None:
         output_dir = args.output_dir

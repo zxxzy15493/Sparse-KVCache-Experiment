@@ -14,11 +14,11 @@ LOG_DIR="./log/EfficencyOverview/${MODEL_NAME}/"
 mkdir -p ${LOG_DIR}
 
 case $MODEL_NAME in
-    llama3.1-8b-instruct)
+    llama-3.1-8b)
         MODEL_PATH="meta-llama/Llama-3.1-8B-Instruct"
         MODEL_TEMPLATE_TYPE="meta-chat-3"
         ;;
-    qwen2.5-7b-instruct)
+    qwen-2.5-7b)
         MODEL_PATH="Qwen/Qwen2.5-7B-Instruct-1M"
         MODEL_TEMPLATE_TYPE="qwen2.5"
         ;;

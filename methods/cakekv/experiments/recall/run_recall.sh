@@ -66,10 +66,10 @@ echo " Budgets: 128 384 1024 4096"
 echo "=============================================="
 echo ""
 
-RULER_ROOT="../../../../benchmarks/recall_test"
+RULER_ROOT="../../../../benchmarks/Ruler_recall"
 declare -A RULER_MODEL_DIRS
-RULER_MODEL_DIRS[llama3.1-8b-128k]="llama3.1-8b"
-RULER_MODEL_DIRS[qwen2.5-7b-instruct-1m]="qwen2.5-7b"
+RULER_MODEL_DIRS[llama3.1-8b-128k]="llama-3.1-8b"
+RULER_MODEL_DIRS[qwen2.5-7b-instruct-1m]="qwen-2.5-7b-1m"
 
 RULER_TASKS=("fwe" "vt" "niah_single_3")
 RULER_BUDGETS=(128 384 1024 4096)

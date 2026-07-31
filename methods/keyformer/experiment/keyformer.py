@@ -154,23 +154,18 @@ def build_chat(tokenizer, prompt, model_name):
 
     return prompt
 
-def build_output_path(model_name_or_path, dataset_name, dataset_path=None):
+def build_output_path(model_name_or_path, dataset_name, dataset_path=None, budget=None):
 
     base_output = "./output"
 
     model_dir_name = os.path.basename(model_name_or_path.rstrip("/"))
 
     sub_dir = ""
-    if dataset_path and "evict_ruler" in dataset_path:
-        parts = dataset_path.split(os.sep)
-        try:
-            idx = parts.index("evict_ruler")
-            if idx + 1 < len(parts):
-                sub_dir = parts[idx + 1]
-        except ValueError:
-            pass
-    
-    output_dir = os.path.join(base_output, model_dir_name, sub_dir)
+
+    if budget is not None:
+        output_dir = os.path.join("budget", f"budget{budget}", model_dir_name, sub_dir)
+    else:
+        output_dir = os.path.join(base_output, model_dir_name, sub_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     return os.path.join(output_dir, f"{dataset_name}.jsonl")
@@ -187,23 +182,24 @@ def seed_everything(seed):
 def main(args):
     seed_everything(42)
     model_name_or_path = args.model_name_or_path
-    model, tokenizer = load(model_name_or_path,args)
-    data_path=os.path.join(args.data_root, args.dataset_name + ".jsonl")
-    print(f"Loading data from {data_path} ...")
-    data = load_dataset("json", data_files=data_path,split="train")
+    model, tokenizer = load(model_name_or_path, args)
 
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
-    dataset_name=args.dataset_name
-    data_root=args.data_root
+    dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
+    dataset_name = args.dataset_name
     prompt_format = dataset2prompt[dataset_name]
-    dataset2maxlen=json.load(open("config/dataset2maxlen.json", "r"))
     max_gen_len = dataset2maxlen[dataset_name]
 
+    subset = f"{dataset_name}_e" if getattr(args, 'extended', False) else dataset_name
+    print(f"Loading data from THUDM/LongBench ({subset}) ...")
+    data = load_dataset("THUDM/LongBench", subset, split="test")
     data_all = [data_sample for data_sample in data]
+
     output_path = build_output_path(
         args.model_name_or_path,
         args.dataset_name,
-        args.data_root
+        "LongBench",
+        budget=getattr(args, 'budget', None),
     )
     print(f"Predictions will be saved to {output_path} ...")
     if args.keyformer:
@@ -216,11 +212,11 @@ def main(args):
         model,
         model_name_or_path,
         tokenizer,
-        data_root,
+        "LongBench",
         dataset_name,
         data_all,
         output_path,
-        prompt_format, 
+        prompt_format,
         max_gen_len=max_gen_len,
     )
 
@@ -229,7 +225,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path", type=str, default="meta-llama/Llama-3.1-8B-Instruct"
     )
-    parser.add_argument("--data_root", type=str, default="LongBench")
     parser.add_argument("--keyformer", action="store_true")
     parser.add_argument("--recent_size", type=int, default=32)
     parser.add_argument("--dataset_name", type=str, default="qasper")
@@ -238,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--key_size", type=int, default=992)
     parser.add_argument("--tau_init", type=float, default=1.0)
     parser.add_argument("--tau_delta", type=float, default=0.01)
+    parser.add_argument("--budget", type=int, default=None)
 
     args = parser.parse_args()
 

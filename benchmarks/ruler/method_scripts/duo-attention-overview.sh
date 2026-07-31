@@ -11,4 +11,4 @@ exec "$script_dir/run_experiment.sh" duo-attention \
   --models "${models[@]}" \
   --tasks "${tasks[@]}" \
   --lengths "${lengths[@]}" \
-  --sparsities "${sparsities[@]}"
+  --fixthreshold "${sparsities[@]}"

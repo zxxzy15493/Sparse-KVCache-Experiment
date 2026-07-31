@@ -129,7 +129,7 @@ def main():
     "block_size": 128,
     "flex_prefill_gamma": args.p,
     "flex_prefill_tau": 0.1,
-    "flex_prefill_min_budget": 1024,
+    "flex_prefill_min_budget": 512,
     "flex_prefill_max_budget": None,
   }
 
@@ -196,10 +196,6 @@ def main():
       raise ValueError(f"Unknown model type in model_name: {model_name}")
 
 
-    os.makedirs(os.path.join(save_dir, length,"budget"), exist_ok=True)
-    pred_file = os.path.join(save_dir, length, f"{task}.jsonl")
-
-
     data = read_manifest(task_file)
 
     dataloaders.append(get_dataloader(data))
@@ -208,9 +204,6 @@ def main():
     loader = accelerator.prepare_data_loader(loader)
     model.config.task=task
   
-    pred_file = os.path.join(save_dir, length, "budget",f"{task}.jsonl")
-
-
     def get_output(index, input, outputs, others, truncation, length_val):
       try:
         if args.chat:
@@ -298,71 +291,65 @@ def main():
     pbar = tqdm(total=len(loader), disable=not accelerator.is_local_main_process)
 
 
-    with open(pred_file, "wt", encoding="utf-8", buffering=1) as fout:
-      for idx, data_point in enumerate(loader):
+    for idx, data_point in enumerate(loader):
 
-        if data_point is None:
-          print(
-            f"[WARN] data_point is None at task={task}, length={length}, idx={idx}"
-          )
-          continue
-
-        if not isinstance(data_point, dict):
-          print(
-            f"[WARN] Unexpected data_point type at task={task}, length={length}, idx={idx}, type={type(data_point)}"
-          )
-          print("data_point =", data_point)
-          continue
-
-        if "index" not in data_point:
-          print(
-            f"[WARN] 'index' not in data_point at task={task}, length={length}, idx={idx}"
-          )
-          print("data_point =", data_point)
-          continue
-
-        if data_point["index"] is None or len(data_point["index"]) == 0:
-          print(
-            f"[WARN] data_point['index'] is None/empty at task={task}, length={length}, idx={idx}"
-          )
-          print("data_point =", data_point)
-          continue
-
-
-        invalid_sample = False
-        for key in ["input", "outputs"]:
-          if key not in data_point or data_point[key] is None or len(data_point[key]) == 0:
-            print(
-              f"[WARN] key '{key}' missing/empty in data_point at task={task}, length={length}, idx={idx}"
-            )
-            print("data_point =", data_point)
-            invalid_sample = True
-            break
-        if invalid_sample:
-          continue
-
-
-        outputs = [
-          item[0] if isinstance(item, (list, tuple)) and len(item) > 0 else item
-          for item in data_point["outputs"]
-        ]
-
-
-
-        model.config.sample_id = f"{task}_{data_point['index'][0]}"
-
-        output = get_output(
-          data_point["index"][0],
-          data_point["input"][0],
-          outputs,
-          data_point.get("others", [{}])[0],
-          data_point.get("truncation", [-1])[0],
-          int(data_point.get("length", [-1])[0]),
+      if data_point is None:
+        print(
+          f"[WARN] data_point is None at task={task}, length={length}, idx={idx}"
         )
+        continue
 
+      if not isinstance(data_point, dict):
+        print(
+          f"[WARN] Unexpected data_point type at task={task}, length={length}, idx={idx}, type={type(data_point)}"
+        )
+        print("data_point =", data_point)
+        continue
 
-        pbar.set_description(desc=f"task {task}, len {length}")
-        pbar.update(1)
+      if "index" not in data_point:
+        print(
+          f"[WARN] 'index' not in data_point at task={task}, length={length}, idx={idx}"
+        )
+        print("data_point =", data_point)
+        continue
+
+      if data_point["index"] is None or len(data_point["index"]) == 0:
+        print(
+          f"[WARN] data_point['index'] is None/empty at task={task}, length={length}, idx={idx}"
+        )
+        print("data_point =", data_point)
+        continue
+
+      invalid_sample = False
+      for key in ["input", "outputs"]:
+        if key not in data_point or data_point[key] is None or len(data_point[key]) == 0:
+          print(
+            f"[WARN] key '{key}' missing/empty in data_point at task={task}, length={length}, idx={idx}"
+          )
+          print("data_point =", data_point)
+          invalid_sample = True
+          break
+      if invalid_sample:
+        continue
+
+      outputs = [
+        item[0] if isinstance(item, (list, tuple)) and len(item) > 0 else item
+        for item in data_point["outputs"]
+      ]
+
+      model.config.sample_id = f"{task}_{data_point['index'][0]}"
+
+      output = get_output(
+        data_point["index"][0],
+        data_point["input"][0],
+        outputs,
+        data_point.get("others", [{}])[0],
+        data_point.get("truncation", [-1])[0],
+        int(data_point.get("length", [-1])[0]),
+      )
+
+      pbar.set_description(desc=f"task {task}, len {length}")
+      pbar.update(1)
 
     accelerator.wait_for_everyone()
 

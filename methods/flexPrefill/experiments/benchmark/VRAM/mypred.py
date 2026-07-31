@@ -52,7 +52,7 @@ def parse_args():
   parser.add_argument("--task", type=str, default="file_prompt", help="Task name for logging")
   parser.add_argument("--dataset_path", type=str, required=True, help="Path to input text file used as prompt")
   parser.add_argument("--max_new_tokens", type=int, default=128, help="Max tokens to generate; TTFT mode forces this to 1")
-  parser.add_argument("--csv_path", type=Path, default=Path("../../vram_results.csv"), help="Peak VRAM CSV results file")
+  parser.add_argument("--csv_path", type=Path, default=Path("../vram_results.csv"), help="Peak VRAM CSV results file")
   
   parser.add_argument(
     "--p",
@@ -152,7 +152,7 @@ def load_model_and_tokenizer(model_path: str, device: torch.device,args,out_path
       "block_size": 128,
       "flex_prefill_gamma": args.p,
       "flex_prefill_tau": 0.1,
-      "flex_prefill_min_budget": 1024,
+      "flex_prefill_min_budget": 512,
       "flex_prefill_max_budget": None,
     }
   
@@ -231,7 +231,7 @@ def VRAM(
       print(f"seqlen = {seqlen}")
       print(f"budget = {args.p}")
       print(f"peak_alloc  = {peak_alloc / 1024**2:.2f} MiB")
-      print(f"peak_reserved = {peak_reserved / 1024**2:.2f} MiB")  
+      #print(f"peak_reserved = {peak_reserved / 1024**2:.2f} MiB")  
       append_vram_csv(
         args=args,
         algorithm="flexprefill",

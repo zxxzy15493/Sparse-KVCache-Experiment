@@ -64,7 +64,7 @@ class HuggingFaceModel:
                     self.check_recall = recall
             
             enable_streaming_llm(curr_model, StreamingArgs(self.start_size, self.recent_size,self.check_recall))
-            print(f">>> [SUCCESS] StreamingLLM injected. Sink={self.start_size}, Recent={self.recent_size}")
+            print(f"StreamingLLM injected. Sink={self.start_size}, Recent={self.recent_size}")
         
         self.generation_kwargs = generation_kwargs
         self.stop = self.generation_kwargs.pop('stop')

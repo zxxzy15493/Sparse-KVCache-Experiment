@@ -44,7 +44,7 @@ from tqdm import tqdm
 from pathlib import Path
 import traceback
 #from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from xattn.src.budget_load_llama import FastPrefillConfig
+from xattn.src.load_llama import FastPrefillConfig
 
 SERVER_TYPES = (
     'trtllm',
@@ -111,7 +111,6 @@ fastprefillconfig = FastPrefillConfig(
     stride = args.stride,
     p = args.p,
     metric=args.metric,
-    task=args.task,
 )
 
 

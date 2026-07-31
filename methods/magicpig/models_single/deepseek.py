@@ -99,14 +99,10 @@ class DeepSeekModel:
 		device: str = "cuda:0",
 		dtype=torch.float16,
 		RECALL: bool = False,
-		fixed_budget: int = 0,
 		fixed_output_length: int = 0,
-		measure_time: bool = False
 	) -> None:
 		self.RECALL = RECALL
-		self.fixed_budget = fixed_budget
 		self.fixed_output_length = fixed_output_length
-		self.measure_time = measure_time
 
 		self.prefill_latency = 0
 		self.decode_latency = 0
@@ -144,7 +140,6 @@ class DeepSeekModel:
 				dtype=self.dtype,
 				use_tensor_cores=True,
 				RECALL=self.RECALL,
-				fixed_budget=self.fixed_budget,
 			)
 		self.k_cache = torch.zeros(
 			(max_length, self.num_key_value_heads, self.head_dim),

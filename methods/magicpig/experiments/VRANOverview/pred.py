@@ -10,9 +10,16 @@ from pathlib import Path
 from utils import load_data
 import torch
 import torch.distributed as dist
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from models.llama_dist_prune import LlamaModel
-from models.qwen_dist_prune import Qwen2Model
+
+
+_MAGICPIG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _MAGICPIG_ROOT not in sys.path:
+    sys.path.insert(0, _MAGICPIG_ROOT)
+
+
+from models_single.llama import LlamaModel
+from models_single.qwen import Qwen2Model
+
 from transformers import AutoTokenizer
 
 
@@ -86,9 +93,7 @@ def load_model(model_name, K, L, batch_size, max_length, max_new_tokens, device,
                 device=device, 
                 dtype=dtype,
                 RECALL=recall,
-                fixed_budget=fixed_budget,
                 fixed_output_length=fixed_output_length,
-                measure_time=measure_time
                 )
     elif 'qwen' in model_name.lower():
         llm = Qwen2Model(model_name=model_name, 
@@ -102,9 +107,7 @@ def load_model(model_name, K, L, batch_size, max_length, max_new_tokens, device,
                 device=device, 
                 dtype=dtype,
                 RECALL=recall,
-                fixed_budget=fixed_budget,
                 fixed_output_length=fixed_output_length,
-                measure_time=measure_time
               )
     else:
         raise ValueError(f"Unsupported model: {model_name}")

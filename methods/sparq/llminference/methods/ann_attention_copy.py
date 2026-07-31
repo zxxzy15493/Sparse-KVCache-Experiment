@@ -555,7 +555,6 @@ class AnnAttention(nn.Module):
 
     k_eff = min(self.settings.k + 1, topk_score.shape[-1])
 
-
     full_indices = topk_score.topk(k_eff, dim=-1).indices # (B, n_kv, 1, 1, k)
     
     sparq_indices = sparqIndices.expand(
@@ -751,23 +750,15 @@ class AnnAttention(nn.Module):
       else:
         causal_index = sparse_attention.causal_index(logmask)
       is_local = (0 <= causal_index) & (causal_index < self.settings.local_k + 1)
-
-
-
-
       topk_score = score.masked_fill(is_local, torch.finfo(score.dtype).max)
       if self.share_kv_group_indices:
         topk_score = topk_score.sum(dim=2, keepdim=True)
-
-
-
-
 
       indices = topk_score.topk(   
         min(self.settings.k + 1, score.shape[-1]), -1
       ).indices # shared: (batch, n_kv_heads, 1, 1, k+1); per-head: (batch, n_kv_heads, n_heads_per_kv, 1, k+1)
   
-
+    #print(self.settings.k)
 
     if self.settings.type=="recall":
       self.caculate_recall(

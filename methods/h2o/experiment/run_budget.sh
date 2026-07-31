@@ -16,7 +16,6 @@ LongBench=(
 
 
 MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
-DATA_ROOT="LongBench"
 RECENT_SIZE=32
 BUDGETS=(128 256 512 1024)
 
@@ -30,11 +29,11 @@ for BUDGET in "${BUDGETS[@]}"; do
 
         python h2o.py \
             --model_name_or_path "$MODEL_PATH" \
-            --data_root "$DATA_ROOT" \
             --dataset_name "$DATASET" \
             --enable_h2o_cache \
             --heavy_hitter_size "$HEAVY_HITTER_SIZE" \
-            --recent_size "$RECENT_SIZE"
+            --recent_size "$RECENT_SIZE" \
+            --budget "$BUDGET"
 
 
         if [ $? -eq 0 ]; then

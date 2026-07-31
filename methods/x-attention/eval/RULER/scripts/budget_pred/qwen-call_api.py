@@ -37,16 +37,36 @@ import os
 import sys
 import threading
 import importlib
+import math
 import time
 import traceback
 from pathlib import Path
-from typing import List
-
+import re  #  import 
 import torch
 from tqdm import tqdm
 
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from xattn.src.budget_load_qwen import FastPrefillConfig
+import flashinfer  
+#from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from xattn.src.load_qwen import FastPrefillConfig
+
+# ===== Qwen + xattention  import =====
+from typing import Optional, Tuple, List, Dict, Any
+
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers.cache_utils import Cache
+from transformers.models.qwen2.modeling_qwen2 import (
+    repeat_kv,
+    apply_rotary_pos_emb,
+)
+import torch.nn as nn
+import types
+
+from xattn.src.Xattention import Xattention_prefill
+#from xattn.src.Flexprefill import Flexprefill_prefill
+#from xattn.src.Minference import Minference_prefill
+from flash_attn import flash_attn_func
+from qwen_ratio import get_qwen_ratio
+# ========================================
 
 
 SERVER_TYPES = (
@@ -139,19 +159,308 @@ parser.add_argument(
 parser.add_argument(
     "--metric", type=str, default="xattn", help=""
 )
+parser.add_argument(
+    "--p",
+    type=str,
+    default="0.9",
+    choices=["0.8", "0.85", "0.9", "0.95"],
+    help="Qwen xattention budget threshold preset.",
+)
 
 args = parser.parse_args()
 args.stop_words = list(filter(None, args.stop_words.split(",")))
 if args.server_type == "hf" or args.server_type == "gemini":
     args.threads = 1
+budget_p = float(args.p)
+qwen_ratio = get_qwen_ratio(args.p)
 
 fastprefillconfig = FastPrefillConfig(
     threshold=args.threshold,
     print_detail=args.print_detail,
     stride=args.stride,
     metric=args.metric,
-    task=args.task,
+    p=budget_p,
 )
+
+# =================== Qwen2.5 + xattention  HF  ===================
+
+
+def read_manifest(file_path):
+    file_path = str(file_path)
+    data = []
+    if not os.path.exists(file_path):
+        return data
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"JSON decode error in {file_path} at line {line_num}: {e}"
+                )
+    return data
+
+
+@torch.no_grad()
+def qwen_new_attention_forward(
+    self,
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_value: Optional[Cache] = None,
+    output_attentions: bool = False,
+    use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    **kwargs,
+):
+    """
+     Qwen2Attention  forward xattention  prefill 
+    """
+    bsz, q_len, _ = hidden_states.size()
+
+    query_states = self.q_proj(hidden_states)
+    key_states = self.k_proj(hidden_states)
+    value_states = self.v_proj(hidden_states)
+
+    query_states = query_states.view(
+        bsz, q_len, self.num_heads, self.head_dim
+    ).transpose(1, 2)
+    key_states = key_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
+    value_states = value_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
+
+    if position_embeddings is None:
+        cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+        cos, sin = position_embeddings
+    query_states, key_states = apply_rotary_pos_emb(
+        query_states, key_states, cos, sin
+    )
+
+    if past_key_value is not None:
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+
+    key_states = repeat_kv(key_states, self.num_key_value_groups)
+    value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+    if key_states.shape[2] == query_states.shape[2]:      #prefill 
+        # prefill Q = K 
+        if getattr(self, "method", "full") == "xattn":
+            thr = getattr(self, "threshold", None)
+            if isinstance(thr, torch.Tensor):
+                thr = thr.to(key_states.device, dtype=key_states.dtype)
+            attn_output = Xattention_prefill(
+                query_states,
+                key_states,
+                value_states,
+                norm=1,
+                stride=args.stride,
+                threshold=thr,
+                use_triton=False,
+                keep_sink=True,
+                keep_recent=True,
+            )
+        else:  # full /  fallback
+            attn_output = flash_attn_func(
+                query_states.transpose(1, 2),
+                key_states.transpose(1, 2),
+                value_states.transpose(1, 2),
+                causal=True,
+            ).transpose(1, 2)
+
+        attn_weights = None
+    else:   #decode 
+        # decode  KV cache  attention
+        # attn_weights = torch.matmul(
+        #     query_states, key_states.transpose(2, 3)
+        # ) / math.sqrt(self.head_dim)
+
+        # if attention_mask is not None:
+        #     causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        #     attn_weights = attn_weights + causal_mask
+
+        # attn_weights = nn.functional.softmax(
+        #     attn_weights, dim=-1, dtype=torch.float32
+        # ).to(query_states.dtype)
+        # attn_weights = nn.functional.dropout(
+        #     attn_weights, p=self.attention_dropout, training=self.training
+        # )
+        # attn_output = torch.matmul(attn_weights, value_states)
+
+        if key_states.device != query_states.device:
+            key_states = key_states.to(query_states.device)
+        if value_states.device != query_states.device:
+            value_states = value_states.to(query_states.device)
+
+        value_states = value_states.squeeze(0).contiguous()   # [n_kv_heads, k_len, head_dim]
+        query_states = query_states.squeeze(0).squeeze(1)     # [n_heads, head_dim]
+        key_states = key_states.squeeze(0).contiguous()       # [n_kv_heads, k_len, head_dim]
+
+        attn_output = flashinfer.single_decode_with_kv_cache(
+            query_states,
+            key_states,
+            value_states,
+            kv_layout="HND",
+        )
+        attn_output = attn_output.unsqueeze(0).unsqueeze(2)
+
+
+
+    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+        raise ValueError(
+            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+            f" {attn_output.size()}"
+        )
+
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    attn_output = attn_output.reshape(bsz, q_len, -1)
+    attn_output = self.o_proj(attn_output)
+
+    if not output_attentions:
+        attn_weights = None
+
+    return attn_output, attn_weights, past_key_value
+
+
+def load_qwen_model_and_tokenizer(path: str):
+    tokenizer = AutoTokenizer.from_pretrained(
+        path, trust_remote_code=True, use_fast=False
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    model = AutoModelForCausalLM.from_pretrained(
+        path,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map="auto",
+        attn_implementation="flash_attention_2",  #  flash/sdpa
+    )
+
+    generation_config = GenerationConfig.from_pretrained(path)
+    eos_token_ids = generation_config.eos_token_id
+    if not isinstance(eos_token_ids, list):
+        eos_token_ids = [eos_token_ids]
+
+    model = model.eval()
+    return model, tokenizer, eos_token_ids
+
+
+class QwenXattnModel:
+    """
+     HF Qwen2.5 + xattention  process_batch(prompts=...) 
+     RULER  call_api.py 
+    """
+
+    def __init__(
+        self,
+        name_or_path: str,
+        fastprefillconfig: FastPrefillConfig,
+        do_sample: bool,
+        repetition_penalty: float,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        stop: List[str],
+        max_new_tokens: int,
+    ):
+        self.name_or_path = name_or_path
+        self.fastprefillconfig = fastprefillconfig
+        self.do_sample = do_sample
+        self.repetition_penalty = repetition_penalty
+        self.temperature = temperature
+        self.top_k = top_k
+        self.top_p = top_p
+        self.stop = stop
+        self.max_new_tokens = max_new_tokens
+
+        #  Qwen 
+        self.model, self.tokenizer, self.eos_token_ids = (
+            load_qwen_model_and_tokenizer(name_or_path)
+        )
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        #  metric  methodxattn / full / flex / minference
+        method = fastprefillconfig.metric
+        if method not in ["xattn", "full", "flex", "minference"]:
+            method = "full"
+        self.method = method
+
+        #  FastPrefillConfig.threshold 
+        thr_cfg = fastprefillconfig.threshold
+        if thr_cfg is None:
+            global_thr = 0.9  # 
+        elif isinstance(thr_cfg, torch.Tensor):
+            if thr_cfg.numel() == 1:
+                global_thr = float(thr_cfg.item())
+            else:
+                global_thr = float(thr_cfg.mean().item())
+        else:
+            global_thr = float(thr_cfg)
+
+        #  self_attn 
+        for name, module in self.model.named_modules():
+            if name.split(".")[-1] == "self_attn":
+                module.method = self.method
+            #layer_idx   
+                layer_idx = int(name.split(".")[2])
+                if args.metric == "xattn":
+                    module.threshold = torch.tensor(qwen_ratio[layer_idx])
+                # layer_max = qwen_ratio[layer_idx]
+                # if isinstance(layer_max, torch.Tensor):
+                #     layer_max = layer_max.detach().cpu().tolist()
+                # else:
+                #     layer_max = list(layer_max)
+
+                module.forward = types.MethodType(
+                    qwen_new_attention_forward, module
+                )
+
+    @torch.no_grad()
+    def process_batch(self, prompts: List[str]) -> List[Dict[str, Any]]:
+        """
+        RULER  call_api  batch 
+        """
+        results: List[Dict[str, Any]] = []
+        for text in prompts:
+            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+
+            outputs = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask", None),
+                max_new_tokens=self.max_new_tokens,
+                do_sample=self.do_sample,
+                temperature=self.temperature if self.do_sample else None,
+                top_k=self.top_k if self.do_sample else None,
+                top_p=self.top_p if self.do_sample else None,
+                eos_token_id=self.eos_token_ids,
+                pad_token_id=self.tokenizer.pad_token_id,
+                repetition_penalty=self.repetition_penalty,
+            )
+
+            gen_ids = outputs[0, inputs["input_ids"].shape[1] :]
+            gen_text = self.tokenizer.decode(
+                gen_ids, skip_special_tokens=True
+            )
+
+            results.append({"text": gen_text})
+
+        return results
+
+
+# ===================================================================
 
 
 def get_llm(tokens_to_generate: int):
@@ -231,19 +540,34 @@ def get_llm(tokens_to_generate: int):
         )
 
     elif args.server_type == "hf":
-        from qwen_model_wrappers import HuggingFaceModel
+        #  Qwen2.5 QwenXattnModel HuggingFaceModel
+        lower_name = args.model_name_or_path.lower()
+        if "qwen2.5" in lower_name:
+            llm = QwenXattnModel(
+                name_or_path=args.model_name_or_path,
+                fastprefillconfig=fastprefillconfig,
+                do_sample=args.temperature > 0,
+                repetition_penalty=1.0,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                stop=args.stop_words,
+                max_new_tokens=tokens_to_generate,
+            )
+        else:
+            from model_wrappers import HuggingFaceModel
 
-        llm = HuggingFaceModel(
-            name_or_path=args.model_name_or_path,
-            fastprefillconfig=fastprefillconfig,
-            do_sample=args.temperature > 0,
-            repetition_penalty=1,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            stop=args.stop_words,
-            max_new_tokens=tokens_to_generate,
-        )
+            llm = HuggingFaceModel(
+                name_or_path=args.model_name_or_path,
+                fastprefillconfig=fastprefillconfig,
+                do_sample=args.temperature > 0,
+                repetition_penalty=1,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                stop=args.stop_words,
+                max_new_tokens=tokens_to_generate,
+            )
 
     elif args.server_type == "mamba":
         from model_wrappers import MambaModel
@@ -430,7 +754,6 @@ def main():
                 for idx in range(start_idx, end_idx + 1):
                     if len(outputs_parallel[idx]) > 0:
                         fout.write(json.dumps(outputs_parallel[idx]) + "\n")
-
                 start_idx = end_idx + 1
 
     print(f"Used time: {round((time.time() - start_time) / 60, 1)} minutes")

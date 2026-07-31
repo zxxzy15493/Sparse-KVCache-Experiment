@@ -15,7 +15,6 @@ LongBench=(
 )
 
 MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
-DATA_ROOT="LongBench"
 RECENT_SIZE=32
 TAU_INIT=1.0
 TAU_DELTA=0.01
@@ -31,13 +30,13 @@ for BUDGET in "${BUDGETS[@]}"; do
 
         python keyformer.py \
             --model_name_or_path "$MODEL_PATH" \
-            --data_root "$DATA_ROOT" \
             --dataset_name "$DATASET" \
             --keyformer \
             --key_size "$KEY_SIZE" \
             --recent_size "$RECENT_SIZE" \
             --tau_init "$TAU_INIT" \
-            --tau_delta "$TAU_DELTA"
+            --tau_delta "$TAU_DELTA" \
+            --budget "$BUDGET"
 
         if [ $? -eq 0 ]; then
             echo -e "\n$DATASET (budget=$BUDGET) success"

@@ -10,9 +10,14 @@ from pathlib import Path
 from utils import load_data
 import torch
 import torch.distributed as dist
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from models.llama_dist_prune import LLM
-from models.qwen_dist_prune import Qwen2Model
+
+_MAGICPIG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _MAGICPIG_ROOT not in sys.path:
+    sys.path.insert(0, _MAGICPIG_ROOT)
+
+from models_single.llama import LlamaModel
+from models_single.qwen import Qwen2Model
+
 from transformers import AutoTokenizer
 
 dist.init_process_group(backend="nccl")
@@ -28,10 +33,10 @@ TASKS = {
     'qa': 32
 }
 
-dataset2prompt = json.load(open("../LongBench/config/dataset2prompt.json", "r"))
-dataset2maxlen = json.load(open("../LongBench/config/dataset2maxlen.json", "r"))
-model2path = json.load(open("../LongBench/config/model2path.json", "r"))
-model2maxlen = json.load(open("../LongBench/config/model2maxlen.json", "r"))
+dataset2prompt = json.load(open("./config/dataset2prompt.json", "r"))
+dataset2maxlen = json.load(open("./config/dataset2maxlen.json", "r"))
+model2path = json.load(open("./config/model2path.json", "r"))
+model2maxlen = json.load(open("./config/model2maxlen.json", "r"))
 
 def is_glm_model(model_name: str) -> bool:
     return "glm" in model_name.lower()
@@ -72,12 +77,10 @@ def load_dataset(args):
 
 def load_model(model_name, K, L, batch_size, max_length, device, dtype, args):
     recall = True if args.recall == 1 else False
-    fixed_budget = args.fixed_budget
     fixed_output_length = args.fixed_output_length 
-    measure_time = True if args.measure_time == 1 else False
 
     if 'llama' in model_name.lower():
-        llm = LLM(model_name=model_name, 
+        llm = LlamaModel(model_name=model_name, 
                   K=K, 
                   L=L, 
                   batch_size=batch_size,
@@ -85,9 +88,7 @@ def load_model(model_name, K, L, batch_size, max_length, device, dtype, args):
                 device=device, 
                 dtype=dtype,
                 RECALL=recall,
-                fixed_budget=fixed_budget,
                 fixed_output_length=fixed_output_length,
-                measure_time=measure_time
                 )
     elif 'qwen' in model_name.lower():
         llm = Qwen2Model(model_name=model_name, 
@@ -98,9 +99,7 @@ def load_model(model_name, K, L, batch_size, max_length, device, dtype, args):
                 device=device, 
                 dtype=dtype,
                 RECALL=recall,
-                fixed_budget=fixed_budget,
                 fixed_output_length=fixed_output_length,
-                measure_time=measure_time
               )
     else:
         raise ValueError(f"Unsupported model: {model_name}")

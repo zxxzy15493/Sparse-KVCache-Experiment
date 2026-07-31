@@ -3,7 +3,7 @@ set -euo pipefail
 
 method=topp32
 experiment=budget
-models=(llama-3.1-8b qwen-2.5-7b qwen-2.5-7b-1m glm-4-9b-1m ds-qwen-1.5b)
+models=(llama-3.1-8b qwen-2.5-7b glm-4-9b-1m)
 thresholds=(0.8 0.85 0.9 0.95)
 datasets=(narrativeqa qasper trec lcc)
 

@@ -9,6 +9,8 @@ methods/retroinfer/
 ├── attn_hub/          # Attention mechanism implementations (flash_attn, minfer, retroinfer)
 ├── cache_hub/         # KV cache implementations (retroinfer cache, kmeans clustering, etc.)
 ├── model_hub/         # Model adaptation layers (llama, qwen, glm, deepseek)
+├── model_hub_time/    # Model for SelectTimeDown experiment
+├── install.sh/        # kernel installation script
 ├── config/            # Model configuration files (JSON)
 ├── config.py          # RetroInfer configuration generation logic
 ├── library/           # C++ extension library
@@ -19,7 +21,7 @@ methods/retroinfer/
     ├── RECALLOverview/      # Experiment 6: Recall evaluation
     ├── LongBenchV2/         # Experiment 7: LongBenchV2 evaluation
     ├── GSM8k/               # Experiment 8: GSM8K evaluation
-    └── SelectTimeBreakdown/ # Auxiliary: Time breakdown analysis
+    └── SelectTimeBreakdown/ # Experiment 9: Time breakdown analysis
 ```
 
 ---
@@ -33,8 +35,8 @@ methods/retroinfer/
 **Datasets & Models**:
 | Dataset | Models | Budget |
 |---------|--------|--------|
-| LongBench (all tasks) | Llama-3.1-8B, Qwen2.5-7B, GLM-4-9B-1M | 1024 |
-| RULER (4k/8k/16k/32k/64k) | Llama-3.1-8B, Qwen2.5-7B-1M | 1024 |
+| LongBench (all tasks) | Llama-3.1-8B, qwen-2.5-7b, GLM-4-9B-1M | 1024 |
+| RULER (4k/8k/16k/32k/64k) | Llama-3.1-8B, qwen-2.5-7b-1M | 1024 |
 
 **How to run**:
 
@@ -42,15 +44,15 @@ methods/retroinfer/
 cd methods/retroinfer/benchmark/AccuracyOverview
 
 # ===== LongBench (single task example) =====
-# Models: llama3.1-8b / qwen2.5-7b / glm-4-9b-chat-1m
+# Models: llama-3.1-8b / qwen-2.5-7b / glm-4-9b-chat-1m
 # Using RetroInfer attention
-bash Accuracy.sh llama3.1-8b RetroInfer LongBench narrativeqa -1 1024
+bash Accuracy.sh llama-3.1-8b RetroInfer LongBench narrativeqa -1 1024
 
 # Using Full Flash Attention (baseline)
-bash Accuracy.sh llama3.1-8b Full_Flash_Attn LongBench narrativeqa -1 1024
+bash Accuracy.sh llama-3.1-8b Full_Flash_Attn LongBench narrativeqa -1 1024
 
 # ===== RULER / Synthetic (single task example) =====
-bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 1024
+bash Accuracy.sh qwen-2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 1024
 
 # Batch run: edit run.sh to uncomment the desired task lines, then execute
 bash run.sh
@@ -75,8 +77,8 @@ bash run.sh
 **Datasets & Models**:
 | Dataset | Models | Budgets |
 |---------|--------|---------|
-| LongBench | Llama-3.1-8B, Qwen2.5-7B | 128, 256, 512, 1024 |
-| RULER (64k) | Llama-3.1-8B, Qwen2.5-7B-1M | 128, 384, 1024, 4096 |
+| LongBench | Llama-3.1-8B, qwen-2.5-7b | 128, 256, 512, 1024 |
+| RULER (64k) | Llama-3.1-8B, qwen-2.5-7b-1M | 128, 384, 1024, 4096 |
 
 **How to run**:
 
@@ -84,16 +86,16 @@ bash run.sh
 cd methods/retroinfer/benchmark/AccuracyOverview
 
 # LongBench with different budgets (e.g., narrativeqa)
-bash Accuracy.sh llama3.1-8b RetroInfer LongBench narrativeqa -1 128
-bash Accuracy.sh llama3.1-8b RetroInfer LongBench narrativeqa -1 256
-bash Accuracy.sh llama3.1-8b RetroInfer LongBench narrativeqa -1 512
-bash Accuracy.sh llama3.1-8b RetroInfer LongBench narrativeqa -1 1024
+bash Accuracy.sh llama-3.1-8b RetroInfer LongBench narrativeqa -1 128
+bash Accuracy.sh llama-3.1-8b RetroInfer LongBench narrativeqa -1 256
+bash Accuracy.sh llama-3.1-8b RetroInfer LongBench narrativeqa -1 512
+bash Accuracy.sh llama-3.1-8b RetroInfer LongBench narrativeqa -1 1024
 
 # RULER with different budgets (e.g., niah_single_1)
-bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 128
-bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 384
-bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 1024
-bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 4096
+bash Accuracy.sh qwen-2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 128
+bash Accuracy.sh qwen-2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 384
+bash Accuracy.sh qwen-2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 1024
+bash Accuracy.sh qwen-2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 4096
 ```
 
 ---
@@ -107,7 +109,7 @@ bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 4096
 **Configuration**:
 | Models | Input Lengths | Output Length | Budget |
 |--------|---------------|---------------|--------|
-| Llama-3.1-8B, Qwen2.5-7B-1M | 4k, 8k, 16k, 32k, 64k, 128k | 32 | 1024 |
+| Llama-3.1-8B, qwen-2.5-7b-1M | 4k, 8k, 16k, 32k, 64k, 128k | 32 | 1024 |
 
 **How to run**:
 
@@ -115,8 +117,8 @@ bash Accuracy.sh qwen2.5-7b-1m RetroInfer Synthetic niah_single_1 -1 4096
 cd methods/retroinfer/benchmark/EfficencyOverview
 
 # Run efficiency evaluation (iterates over multiple input lengths automatically)
-bash efficencyOverview.sh llama3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
-bash efficencyOverview.sh qwen2.5-7b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
+bash efficencyOverview.sh llama-3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
+bash efficencyOverview.sh qwen-2.5-7b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
 
 # Or use the batch commands in run.sh
 bash run.sh
@@ -140,8 +142,8 @@ bash run.sh
 **Configuration**:
 | Models | Input Length | Budgets |
 |--------|-------------|---------|
-| Llama-3.1-8B, Qwen2.5-7B-1M | 4k | 128, 256, 512, 1024 |
-| Llama-3.1-8B, Qwen2.5-7B-1M | 64k | 128, 384, 1024, 4096 |
+| Llama-3.1-8B, qwen-2.5-7b-1M | 4k | 128, 256, 512, 1024 |
+| Llama-3.1-8B, qwen-2.5-7b-1M | 64k | 128, 384, 1024, 4096, 16384 |
 
 **How to run**:
 
@@ -159,7 +161,7 @@ bash efficencyBudget.sh llama-3.1-8b RetroInfer 0.018 0.232 128 1 0 0 32 Full_Fl
 bash efficencyBudget.sh llama-3.1-8b RetroInfer 0.018 0.232 384 1 0 0 32 Full_Flash_Attn 65536
 bash efficencyBudget.sh llama-3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn 65536
 bash efficencyBudget.sh llama-3.1-8b RetroInfer 0.018 0.232 4096 1 0 0 32 Full_Flash_Attn 65536
-
+bash efficencyBudget.sh llama-3.1-8b RetroInfer 0.018 0.232 16384 1 0 0 32 Full_Flash_Attn 65536
 # Or use the pre-arranged batch commands in run.sh
 bash run.sh
 ```
@@ -179,8 +181,8 @@ bash run.sh
 **Configuration**:
 | Models | Input Length | Output Length | Budgets |
 |--------|-------------|---------------|---------|
-| Llama-3.1-8B, Qwen2.5-7B-1M | 1k | 2, 4096 | 64, 512 |
-| Llama-3.1-8B, Qwen2.5-7B-1M | 4k ~ 128k | 2 | 1024 |
+| Llama-3.1-8B, qwen-2.5-7b-1M | 1k | 2, 4096 | 64, 512 |
+| Llama-3.1-8B, qwen-2.5-7b-1M | 4k ~ 256k | 2 | 1024 |
 
 **How to run**:
 
@@ -225,8 +227,8 @@ bash run.sh
 **Datasets & Models**:
 | Dataset | Models | Budgets |
 |---------|--------|---------|
-| LongBench (narrativeqa, qasper) | Llama-3.1-8B, Qwen2.5-7B | 128, 256, 512, 1024 |
-| RULER (64k, niah_single_3/vt/fwe) | Llama-3.1-8B, Qwen2.5-7B-1M | 128, 384, 1024, 4096 |
+| LongBench (narrativeqa, qasper) | Llama-3.1-8B, qwen-2.5-7b | 128, 256, 512, 1024 |
+| RULER (64k, niah_single_3/vt/fwe) | Llama-3.1-8B, qwen-2.5-7b-1M | 128, 384, 1024, 4096 |
 
 **How to run**:
 
@@ -263,7 +265,7 @@ bash run.sh
 
 **Directory**: `benchmark/LongBenchV2/`
 
-**Configuration**: Qwen2.5-7B-1M, budget 4096, Chain-of-Thought reasoning
+**Configuration**: qwen-2.5-7b-1M, budget 4096, Chain-of-Thought reasoning
 
 **How to run**:
 
@@ -271,7 +273,7 @@ bash run.sh
 cd methods/retroinfer/benchmark/LongBenchV2
 
 # RetroInfer mode
-bash LongBenchV2.sh Qwen2.5-7B-Instruct-1M Full_Flash_Attn RetroInfer 4096
+bash LongBenchV2.sh qwen-2.5-7b-Instruct-1M Full_Flash_Attn RetroInfer 4096
 
 # Or simply execute run.sh
 bash run.sh
@@ -319,12 +321,48 @@ bash run.sh
 
 ---
 
-## Environment
+## Experiment 9: Select Time Breakdown
 
-For environment setup, model weight paths, and dependencies, refer to the following configuration files:
-- `methods/retroinfer/config/` — Model configs (JSON), defining RetroInfer parameters for each model
-- `benchmarks/local_paths.json` — Dataset path configuration
-- `ENVIRONMENT.md` in the project root — Conda environment and dependency instructions
+**Purpose**: Profile and analyze the fine-grained time breakdown of RetroInfer's inference pipeline across different input lengths. This experiment records the wall-clock time spent in each stage — prefill, coarse-grained KV selection, fine-grained attention, and decoding — to help identify bottlenecks and guide optimization.
+
+**Directory**: `benchmark/SelectTimeBreakdown/`
+
+**Configuration**:
+| Model | Input Lengths | Output Length | Budget |
+|-------|---------------|---------------|--------|
+| Llama-3.1-8B | 4096, 65536 | 32 | 1024 |
+
+**How to run**:
+
+```bash
+cd methods/retroinfer/benchmark/SelectTimeBreakdown
+
+# 4k input length
+bash SelectTimeBreakdown.sh llama-3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn 4096
+
+# 64k input length
+bash SelectTimeBreakdown.sh llama-3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn 65536
+
+# Or simply execute run.sh
+bash run.sh
+```
+
+**Key scripts**:
+- `SelectTimeBreakdown.sh` — Entry point; launches inference with `--measure_time` enabled
+- `pred.py` — Inference script that reads input from `benchmarks/myinput.txt`, runs the model, and records `time_breakdown` from `timeManager`
+- `utils.py` — JSONL data loading utilities
+- `run.sh` — Pre-configured batch commands for 4k and 64k input lengths
+
+**How it works**:
+1. Reads a fixed input text from `benchmarks/myinput.txt`
+2. Runs inference with `--measure_time` enabled, which instruments `timeManager` to record per-stage latencies
+3. `timeManager.myinit()` initializes timing counters based on the model's number of layers (32 for Llama, 28 for Qwen)
+4. After each decode step, `timeManager.get_final_time()` collects the accumulated timing breakdown across all layers and decode steps
+5. Results are saved as JSON with the `time_breakdown` field containing detailed per-stage timing data
+
+**Output**: Results saved in `results/efficencyBudget/<model>/RetroInfer/<prefill_method>/Fixed/<budget>/SelectTimeBreakdown_<input_len>_<output_len>_<budget>.json`, logs in `log/efficencyOverview/...`
+
+---
 
 ## Quick Parameter Reference
 
@@ -333,7 +371,6 @@ For environment setup, model weight paths, and dependencies, refer to the follow
 | `attn_type` | Attention type | `RetroInfer`, `Full_Flash_Attn` |
 | `prefill_method` | Attention implementation for prefill | `Full_Flash_Attn`, `minfer` |
 | `budget` | KV cache budget (fixed mode) | 128, 256, 512, 1024, 4096 |
-| `ratio_or_fixed` | Budget mode: 1=fixed, 0=ratio | 1 |
 | `benchmark` | Dataset name | `LongBench`, `Synthetic` (RULER) |
 | `task` | Specific task name | See `config/dataset2maxlen.json` |
 | `dtype` | Inference precision | `bf16` |

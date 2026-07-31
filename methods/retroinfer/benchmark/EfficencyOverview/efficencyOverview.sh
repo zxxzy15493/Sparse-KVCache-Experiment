@@ -1,18 +1,3 @@
-# !/bin/bash
-
-# bash bash.sh llama-3.1-8b RetroInfer 0.018 0.232 bf16 1024 1 
-# bash bash.sh qwen2.5-7b RetroInfer 0.018 0.232 bf16 1024 1 
-
-# bash bash.sh llama-3.1-8b Full_Flash_Attn 0.018 0.232 1024 1 0 0 32 minfer
-# bash bash.sh llama-3.1-8b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
-
-# bash bash.sh qwen2.5-7b Full_Flash_Attn 0.018 0.232 1024 1 0 0 32 minfer
-# bash bash.sh qwen2.5-7b RetroInfer 0.018 0.232 1024 1 0 0 32 Full_Flash_Attn
-# bash bash.sh qwen2.5-7b RetroInfer 0.018 0.232 1024 1 0 0 0
-
-# bash bash.sh glm-4-9b-chat-1m RetroInfer 0.018 0.232 1024 1 0 0 0 Full_Flash_Attn
-# bash bash.sh glm-4-9b-chat-1m Full_Flash_Attn 0.018 0.232 1024 1 0 0 0 minfer
-
 if [ $# -ne 10 ]; then
     echo "Usage: $0 <model> $1 <attn_type> $2 <budget_ratio> $3 <estimate_ratio> $4 <budget> $5 <ratio_or_fixed> $6{recall} $7{measure_time} $8{fixed_output_length} $9{prefill_method}"
     exit 1

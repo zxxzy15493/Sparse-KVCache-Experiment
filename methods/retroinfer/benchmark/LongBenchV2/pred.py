@@ -44,12 +44,8 @@ def query_llm(prompt, llm, model, max_new_tokens=128, stop=None):
     if model in model_map:
         input_ids = llm.tokenizer.encode(prompt)
         if len(input_ids) > max_len:
-            print("n" + "=" * 80)
-            print(f"input_ids length is {len(input_ids)} before truncation.")
             input_ids = input_ids[:max_len//2] + input_ids[-max_len//2:]
-            print("=" * 80)
-            print(f"input_ids length is {len(input_ids)} after truncation.")
-            print("=" * 80 + "\n")
+
             prompt = llm.tokenizer.decode(input_ids, skip_special_tokens=True)
     else:
         input_ids = llm.tokenizer.encode(prompt, disallowed_special=())
@@ -63,7 +59,7 @@ def query_llm(prompt, llm, model, max_new_tokens=128, stop=None):
     attention_masks = inputs.attention_mask
 
     attn_config = generate_config(
-        model, 
+        model_map[model], 
         input_ids.shape[1], 
         args.attn_type,
         budget_ratio=args.budget_ratio,

@@ -69,7 +69,7 @@ class HuggingFaceModel:
                     self.check_recall = check_recall
             
             enable_keyformer(curr_model, KeyformerArgs(self.key_size, self.recent_size, self.tau_init, self.tau_delta, self.check_recall))
-            print(f">>> [SUCCESS] Keyformer injected. key_size={self.key_size}, recent_size={self.recent_size}")
+            print(f"Keyformer injected. key_size={self.key_size}, recent_size={self.recent_size}")
             
             if self.check_recall:
                 print("Recall calculation is ENABLED. Will output to keyformer_recall_all_steps.csv")

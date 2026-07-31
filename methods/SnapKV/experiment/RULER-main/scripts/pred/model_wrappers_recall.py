@@ -53,7 +53,7 @@ class HuggingFaceModel:
 
             from snapkv.monkeypatch.snapkv_recall import enable_snapkv_recall
             enable_snapkv_recall(self.model, check_recall=self.check_recall, **compress_args)
-            print(f">>>> RULER SnapKV injected successfully. Layers patched. Config: {compress_args}")
+            print(f"RULER SnapKV injected successfully. Layers patched. Config: {compress_args}")
 
         else:
             try:

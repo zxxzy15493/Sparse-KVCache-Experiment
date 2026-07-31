@@ -1,8 +1,8 @@
 #!/bin/bash
 # Usage examples:
 #   bash gsm8k_run.sh deepseek-r1-distill-qwen-1.5b
-#   bash gsm8k_run.sh llama3.1-8b
-#   bash gsm8k_run.sh qwen2.5-7b
+#   bash gsm8k_run.sh llama-3.1-8b
+#   bash gsm8k_run.sh qwen-2.5-7b
 #
 # The model name corresponds to a key in config/model2path.json.
 

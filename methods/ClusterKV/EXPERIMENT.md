@@ -59,22 +59,14 @@ directories as the accuracy overview experiment.
 ## 3. Efficiency overview
 
 Measures prefill and decoding latency as input length increases for
-Llama-3.1-8B and Qwen-2.5-7B-1M. The normal entry point uses the standard
-runtime environment; the CUDA 12.9 wrapper is available for FlashInfer-based
-setups.
+Llama-3.1-8B and Qwen-2.5-7B-1M.
 
-Files: `efficiency/run_my_latency_overview.sh`,
-`efficiency/my_textgen.py`, and
-`efficiency/run_my_latency_overview_cuda129.sh`.
+Files: `efficiency/run_my_latency_overview.sh`and
+`efficiency/my_textgen.py`.
 
 ```bash
 cd methods/ClusterKV/efficiency
 bash run_my_latency_overview.sh
-```
-
-```bash
-cd methods/ClusterKV
-bash efficiency/run_my_latency_overview_cuda129.sh
 ```
 
 Logs and latency CSV files are written to `efficiency/log_latency/`.
@@ -168,3 +160,17 @@ bash run.sh
 
 Predictions, evaluation files, and logs are written below `gsm8k/results/`
 and `gsm8k/log/`.
+
+## 9. Breakdown
+
+Measures per-component runtime breakdown for ClusterKV.
+
+Files: `breakdown_test/run_myllama_breakdown.sh` and
+`breakdown_test/breakdown_myllama.py`.
+
+```bash
+cd methods/ClusterKV
+bash breakdown_test/run_myllama_breakdown.sh
+```
+
+Breakdown logs and CSV files are written below `breakdown_test/log/`.

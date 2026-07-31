@@ -2,7 +2,7 @@
 
 Llama="meta-llama/Llama-3.1-8B-Instruct"
 Qwen_1M="Qwen/Qwen2.5-7B-Instruct-1M"
-DATASET="../../benchmarks/myinput.txt"
+DATASET="../../../benchmarks/myinput.txt"
 COMPRESS_CONFIG_DIR="./config"
 
 BUDGET=1024

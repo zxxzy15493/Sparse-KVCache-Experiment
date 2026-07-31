@@ -320,6 +320,7 @@ class FastPrefillConfig(dict):
     if threshold is not None:
       self.threshold = torch.ones((32, 32)).to("cuda") * threshold
     else:
+      #print(p)
       if p == 0.9:
         self.threshold = torch.tensor(llama_fuse_90)
       elif p == 0.8:

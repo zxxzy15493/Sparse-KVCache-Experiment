@@ -73,16 +73,22 @@ fi
 if (( ${#budgets[@]} == 0 )); then
     budgets=(1024)
 fi
+if [[ -n "${PQCACHE_SUBVEC_64K:-}" || -n "${PQCACHE_SUBBITS_64K:-}" ]]; then
+    if [[ "$method" != "pqcache" ]]; then
+        echo "PQCACHE_SUBVEC_64K/PQCACHE_SUBBITS_64K can only be used with method pqcache" >&2
+        exit 2
+    fi
+    if [[ -z "${PQCACHE_SUBVEC_64K:-}" || -z "${PQCACHE_SUBBITS_64K:-}" ]]; then
+        echo "PQCACHE_SUBVEC_64K and PQCACHE_SUBBITS_64K must be provided together" >&2
+        exit 2
+    fi
+fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM=false
 if [[ "$method" == "pqcache" ]]; then
     export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-    export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-    export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-    export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
-    export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
 fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -107,13 +113,20 @@ for model in "${models[@]}"; do
         for threshold in "${_fixthreshold[@]}"; do
             # Build the output-directory signature and threshold override.
             if [[ -n "$threshold" ]]; then
-                parameter_signature="budget-${budget}__fixthreshold-${threshold}"
-                extra_args=(--set "fixthreshold=$threshold")
+                base_parameter_signature="budget-${budget}__fixthreshold-${threshold}"
+                base_extra_args=(--set "fixthreshold=$threshold")
             else
-                parameter_signature="budget-${budget}"
-                extra_args=()
+                base_parameter_signature="budget-${budget}"
+                base_extra_args=()
             fi
             for max_seq_length in "${lengths[@]}"; do
+                parameter_signature="$base_parameter_signature"
+                extra_args=("${base_extra_args[@]}")
+                env_args=()
+                if [[ "$method" == "pqcache" && "$max_seq_length" -ge 65536 && -n "${PQCACHE_SUBVEC_64K:-}" ]]; then
+                    parameter_signature="${parameter_signature}__subvec-${PQCACHE_SUBVEC_64K}__subbits-${PQCACHE_SUBBITS_64K}"
+                    env_args=(SUBVEC="$PQCACHE_SUBVEC_64K" SUBBITS="$PQCACHE_SUBBITS_64K")
+                fi
                 data_dir="$benchmark_root/$model/synthetic/$max_seq_length/data"
                 pred_dir="$prediction_root/synthetic/$model/$method/$parameter_signature/$max_seq_length"
                 mkdir -p "$data_dir" "$pred_dir"
@@ -128,7 +141,7 @@ for model in "${models[@]}"; do
                         --max_seq_length "$max_seq_length" \
                         --model_template_type "$template_type" \
                         --num_samples "$num_samples"
-                    python "$script_dir/call_api.py" \
+                    env "${env_args[@]}" python "$script_dir/call_api.py" \
                         --data-dir "$data_dir" \
                         --save-dir "$pred_dir" \
                         --task "$task" \

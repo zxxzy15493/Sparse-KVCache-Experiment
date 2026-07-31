@@ -15,6 +15,7 @@ def parse_args(args=None):
     parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
     parser.add_argument('--dataset', type=str, default="LongBench", help="The folder of dataset to evaluate on")
     parser.add_argument('--dataset_name', type=str, default='qasper', help="The name of dataset to evaluate on")
+    parser.add_argument('--budget', type=int, default=None)
     return parser.parse_args(args)
 
 # This is the customized building prompt for chat models
@@ -148,15 +149,14 @@ def load_model_and_tokenizer(path, model_name, device, compress=False):
     model = model.eval()
     return model, tokenizer
 
-def build_output_path(model, dataset_name):
+def build_output_path(model, dataset_name, budget=None):
     base_output = "./output"
     sub_dir = ""
-    if dataset_path and "evict_ruler" in dataset_path:
 
-        parent_dir = os.path.dirname(dataset_path)
-        sub_dir = os.path.basename(parent_dir)
-
-    output_dir = os.path.join(base_output, model, sub_dir)
+    if budget is not None:
+        output_dir = os.path.join("budget", f"budget{budget}", model, sub_dir)
+    else:
+        output_dir = os.path.join(base_output, model, sub_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     return os.path.join(output_dir, f"{dataset_name}.jsonl")
@@ -183,7 +183,7 @@ if __name__ == '__main__':
     dataset = args.dataset
     # for dataset in datasets:
     if args.compress_args_path:
-        compress_args = json.load(open(os.path.join('config', args.compress_args_path), "r"))
+        compress_args = json.load(open(args.compress_args_path, "r"))
         compress = True
         write_model_name = model_name
         replace_llama()
@@ -193,7 +193,9 @@ if __name__ == '__main__':
         compress_args = None
         write_model_name = model_name
     if "LongBench" in dataset:
-        data = load_dataset("json", data_files=dataset_path,split="train")
+        subset = f"{dataset_name}_e" if getattr(args, 'extended', False) else dataset_name
+        print(f"Loading data from THUDM/LongBench ({subset}) ...")
+        data = load_dataset("THUDM/LongBench", subset, split="test")
         prompt_format = dataset2prompt[dataset_name]
         max_gen = dataset2maxlen[dataset_name]
     elif "ruler" in dataset:
@@ -204,6 +206,7 @@ if __name__ == '__main__':
     output_path = build_output_path(
         args.model,
         args.dataset_name,
+        budget=getattr(args, 'budget', None),
     )
     if compress_args is not None:
         get_pred_single_gpu(data_all, max_length, max_gen, prompt_format, dataset, dataset_name, model_name, model2path, output_path, compress,  **compress_args)

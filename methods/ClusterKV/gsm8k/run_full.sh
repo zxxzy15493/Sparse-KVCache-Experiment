@@ -17,8 +17,3 @@ python -u evaluate.py \
     --input ${SAVE_DIR}/gsm8k.jsonl \
     --output ${SAVE_DIR}/gsm8k_eval.jsonl \
     --force
-
-python -u ./tool/data_infos.py \
-    --data-dir ${SAVE_DIR} \
-    --model ${MODEL} \
-    --task gsm8k 
