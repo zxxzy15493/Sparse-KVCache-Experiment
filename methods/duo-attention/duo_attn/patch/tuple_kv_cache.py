@@ -3,15 +3,10 @@ from typing import Optional, Tuple
 import torch
 import torch.functional as F
 
-from transformers.models.llama.modeling_llama import (
-    LlamaForCausalLM,
-    CausalLMOutputWithPast,
-    List,
-    Union,
-    CrossEntropyLoss,
-    BaseModelOutputWithPast,
-    apply_rotary_pos_emb,
-)
+from transformers.models.llama.modeling_llama import LlamaForCausalLM, apply_rotary_pos_emb
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
+from torch.nn import CrossEntropyLoss
+from typing import List, Union
 from transformers.models.mistral.modeling_mistral import (
     MistralForCausalLM,
 )

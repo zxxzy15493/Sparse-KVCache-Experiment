@@ -9,20 +9,26 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# These are Hugging Face identifiers, not machine-specific paths. Local absolute
-# paths, when needed, are stored only in local_paths.json beside this file.
+# These are Hugging Face repository IDs, not machine-specific filesystem paths.
 MODEL_PATHS = {
     "llama-3.1-8b": "meta-llama/Llama-3.1-8B-Instruct",
     "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "qwen-2.5-7b-1m": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "qwen3-4b": "Qwen/Qwen3-4B",
+    "qwen3-8b": "Qwen/Qwen3-8B",
     "glm-4-9b-1m": "zai-org/glm-4-9b-chat-1m",
     "ds-qwen-1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
 }
 MODELS = tuple(MODEL_PATHS)
+MODEL_IDS = tuple(MODEL_PATHS.values())
+MODEL_CHOICES = MODELS + MODEL_IDS
+MODEL_ID_TO_ALIAS = {model_id: alias for alias, model_id in MODEL_PATHS.items()}
 MODEL_CONTEXT_LENGTHS = {
     "llama-3.1-8b": 131072,
     "qwen-2.5-7b": 131072,
     "qwen-2.5-7b-1m": 1000000,
+    "qwen3-4b": 40960,
+    "qwen3-8b": 40960,
     "glm-4-9b-1m": 1000000,
     "ds-qwen-1.5b": 32768,
 }
@@ -49,22 +55,26 @@ def method_defaults(method: str) -> dict[str, object]:
 
 
 def model_path(model: str) -> str:
-    local_paths = Path(__file__).with_name("local_paths.json")
-    overrides = json.loads(local_paths.read_text(encoding="utf-8")) if local_paths.exists() else {}
-    if model in overrides:
-        return overrides[model]
+    if model in MODEL_PATHS.values():
+        return model
     try:
         return MODEL_PATHS[model]
     except KeyError as error:
-        raise ValueError(f"Unknown model '{model}'. Available: {', '.join(MODEL_PATHS)}") from error
+        raise ValueError(f"Unknown model '{model}'. Available: {', '.join(MODEL_CHOICES)}") from error
+
+
+def model_alias(model: str) -> str:
+    return MODEL_ID_TO_ALIAS.get(model, model)
 
 
 def model_context_length(model: str) -> int:
+    model = model_alias(model)
     return MODEL_CONTEXT_LENGTHS[model]
 
 
 def model_family(model: str) -> str:
-    return "glm4" if model.startswith("glm-") else "qwen" if "qwen" in model else "llama"
+    model = model.lower()
+    return "glm4" if "glm" in model else "qwen" if "qwen" in model else "llama"
 
 
 def parse_set(values: list[str], method: str | None = None) -> dict[str, object]:

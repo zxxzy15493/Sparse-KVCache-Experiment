@@ -24,11 +24,26 @@ def attn_forward(
         Tuple[torch.Tensor, torch.Tensor]
     ] = None,  # will become mandatory in v4.46
     past_key_value: Cache = None,
+    past_key_values: Optional[Cache] = None,
     best_pattern=None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    # Transformers 4.57 passes the shared cache as `past_key_values` to attention.
+    if past_key_values is not None:
+        past_key_value = past_key_values
     output_attentions = False
 
     bsz, q_len, _ = hidden_states.size()
+
+    # Transformers 4.57 derives these dimensions from projection shapes and
+    # no longer exposes the legacy attributes on Qwen2Attention.
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(
+        self, "num_key_value_heads",
+        getattr(self.config, "num_key_value_heads", self.num_heads),
+    )
+    self.num_key_value_groups = getattr(
+        self, "num_key_value_groups", self.num_heads // self.num_key_value_heads
+    )
     
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
@@ -134,12 +149,9 @@ def LlamaDecoderLayer_forward(
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
-
+        # In Transformers 4.57 decoder layers return the hidden-state tensor
+        # directly unless attention weights were explicitly requested. Cache
+        # objects are updated in place by the attention module.
         if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
+            return hidden_states, self_attn_weights
+        return hidden_states

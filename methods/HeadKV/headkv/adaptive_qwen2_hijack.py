@@ -149,12 +149,26 @@ def adaptive_qwen2Model_forward(
 
     # embed positions
     hidden_states = inputs_embeds
+    position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+
+    # Transformers 4.57 stores these dimensions on config rather than the
+    # attention modules. The legacy HeadKV kernels still read module fields.
+    for layer in self.layers:
+        attn = layer.self_attn
+        attn.num_heads = getattr(attn, "num_heads", attn.config.num_attention_heads)
+        attn.num_key_value_heads = getattr(
+            attn, "num_key_value_heads", getattr(attn.config, "num_key_value_heads", attn.num_heads)
+        )
+        attn.num_key_value_groups = getattr(
+            attn, "num_key_value_groups", attn.num_heads // attn.num_key_value_heads
+        )
+        attn.hidden_size = getattr(attn, "hidden_size", attn.config.hidden_size)
 
     # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = None
+    next_decoder_cache = past_key_values if use_cache else None
 
     for decoder_layer in self.layers:
         if output_hidden_states:
@@ -177,29 +191,28 @@ def adaptive_qwen2Model_forward(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
+                    past_key_values=past_key_values,
                     use_cache=use_cache,
                     cache_position=cache_position,
+                    position_embeddings=position_embeddings,
                 )
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
+                    past_key_values=past_key_values,
                     use_cache=use_cache,
                     cache_position=cache_position,
+                    position_embeddings=position_embeddings,
                 )
 
-        hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        if isinstance(layer_outputs, torch.Tensor):
+            hidden_states = layer_outputs
+        else:
+            hidden_states = layer_outputs[0]
+            if output_attentions and len(layer_outputs) > 1:
+                all_self_attns += (layer_outputs[1],)
 
     hidden_states = self.norm(hidden_states)
 
@@ -248,6 +261,8 @@ def adaptive_qwen2_flash_attn2_forward(
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     # NOTE: adakv
+    if past_key_value is None:
+        past_key_value = kwargs.pop("past_key_values", None)
     init_headkv(self)
     if past_key_value is not None and not isinstance(past_key_value, DynamicCacheSplitHeadFlatten):
         past_key_value = DynamicCacheSplitHeadFlatten.from_legacy_cache(past_key_value)
@@ -274,6 +289,10 @@ def adaptive_qwen2_flash_attn2_forward(
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    if hasattr(self, "q_norm"):
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
     
     # ============================================================
     # ============================================================
@@ -289,7 +308,10 @@ def adaptive_qwen2_flash_attn2_forward(
         else:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
     
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    if position_embeddings is not None:
+        cos, sin = position_embeddings
+    else:
+        cos, sin = self.rotary_emb(value_states, position_ids)
     
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
     
@@ -407,7 +429,7 @@ def adaptive_qwen2_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 def reason_qwen2_flash_attn2_forward(
     self,
@@ -419,6 +441,8 @@ def reason_qwen2_flash_attn2_forward(
     position_ids: Optional[torch.LongTensor] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    if past_key_value is None:
+        past_key_value = kwargs.pop("past_key_values", None)
     # NOTE: reasonkv
     # Ensure config carries model path/name expected by ReasonSnapKVCluster
     # Try multiple fallbacks so Qwen2 behaves like LLaMA when loaded differently
@@ -460,6 +484,10 @@ def reason_qwen2_flash_attn2_forward(
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    if hasattr(self, "q_norm"):
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
     
     # ============================================================
     # ============================================================
@@ -475,7 +503,10 @@ def reason_qwen2_flash_attn2_forward(
         else:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
     
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    if position_embeddings is not None:
+        cos, sin = position_embeddings
+    else:
+        cos, sin = self.rotary_emb(value_states, position_ids)
     
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
     # [SnapKV] move to ahead
@@ -580,7 +611,7 @@ def reason_qwen2_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 def prepare_inputs_for_generation_qwen2(
     self,

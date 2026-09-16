@@ -23,14 +23,21 @@ step_layer_recalls = {}
 def llama_flash_attn2_forward(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     attention_mask: Optional[torch.LongTensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
+    past_key_values: Optional[Cache] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     init_snapkv(self)
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(self, "num_key_value_heads", getattr(self.config, "num_key_value_heads", self.config.num_attention_heads))
+    self.num_key_value_groups = getattr(self, "num_key_value_groups", self.num_heads // self.num_key_value_heads)
+    self.hidden_size = getattr(self, "hidden_size", self.config.hidden_size)
+    past_key_value = past_key_values
 
     output_attentions = False
     bsz, q_len, _ = hidden_states.size()
@@ -59,18 +66,21 @@ def llama_flash_attn2_forward(
             if self.kv_seq_len != 0:
                 kv_seq_len += self.kv_seq_len
             else:
-                kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
         else:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
 
-    cos, sin = self.rotary_emb(value_states, position_ids)
-    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+    if position_embeddings is None:
+        position_ids = position_ids if position_ids is not None else cache_position.unsqueeze(0)
+        position_embeddings = self.rotary_emb(value_states, position_ids)
+    cos, sin = position_embeddings
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
     if past_key_value is not None:
-        cache_kwargs = {"sin": sin, "cos": cos}  
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         
         if key_states.shape[-2] == kv_seq_len: 
             self.kv_seq_len = kv_seq_len
@@ -96,6 +106,5 @@ def llama_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
-
+    return attn_output, attn_weights
 

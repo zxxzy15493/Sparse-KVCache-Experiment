@@ -37,8 +37,12 @@ def parse_args(args=None):
 # This is the customized building prompt for chat models
 def build_chat(tokenizer, prompt, model_name):
     # if "glm4" in model_name or "intern" in model_name or "llama3" in model_name or "wen2" in model_name:
-    prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                            add_generation_prompt=True, tokenize=False)
+    chat_kwargs = {"add_generation_prompt": True, "tokenize": False}
+    # Qwen3 enables reasoning mode by default; LongBench expects the direct
+    # answer continuation used by the other instruction models.
+    if "qwen3" in model_name:
+        chat_kwargs["enable_thinking"] = False
+    prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}], **chat_kwargs)
     return prompt
 
 

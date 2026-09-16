@@ -31,7 +31,11 @@ def llama_flex_prefill_attention_forward(
   position_embeddings: Optional[
     Tuple[torch.Tensor, torch.Tensor]
   ] = None, # will become mandatory in v4.45
+  past_key_values: Optional[Cache] = None,
+  **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+  if past_key_values is not None:
+    past_key_value = past_key_values
   if isinstance(past_key_value, StaticCache):
     raise ValueError(
       "`static` cache implementation is not compatible with `attn_implementation==flash_attention_2` "
@@ -135,4 +139,4 @@ def llama_flex_prefill_attention_forward(
   if not output_attentions:
     attn_weights = None
 
-  return attn_output, attn_weights, past_key_value
+  return attn_output, attn_weights

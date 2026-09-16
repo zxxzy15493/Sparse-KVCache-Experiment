@@ -15,10 +15,13 @@ from transformers.models.mistral.configuration_mistral import MistralConfig
 
 
 from transformers.models.mistral.modeling_mistral import *
+from transformers.models.mistral.modeling_mistral import MistralAttention, apply_rotary_pos_emb, repeat_kv
 
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
+from transformers.modeling_outputs import BaseModelOutputWithPast
+MistralFlashAttention2 = MistralAttention
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
@@ -42,7 +45,11 @@ def mistral_attn_forward_cake(
     output_attentions: bool = False,
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
+    past_key_values: Optional[Cache] = None,
 ):
+
+    if past_key_values is not None:
+        past_key_value = past_key_values
 
     if isinstance(past_key_value, StaticCache):
         raise ValueError(
@@ -178,7 +185,7 @@ def mistral_attn_forward_cake(
         q_len,
         dropout=dropout_rate,
         sliding_window=getattr(self.config, "sliding_window", None),
-        use_top_left_mask=self._flash_attn_uses_top_left_mask,
+        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
         is_causal=self.is_causal,
     )
 

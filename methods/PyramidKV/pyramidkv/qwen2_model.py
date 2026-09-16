@@ -5,12 +5,14 @@ from typing import List, Optional, Tuple, Union
 import warnings
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.masking_utils import create_causal_mask
 from transformers.models.qwen2.modeling_qwen2 import (
     apply_rotary_pos_emb,
     repeat_kv,
-    Qwen2FlashAttention2,
-    _flash_attention_forward,
+    Qwen2Attention,
 )
+from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
+from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.utils import (
     logging,
 )
@@ -100,7 +102,7 @@ def fixed_qwen2Model_forward(
     return_legacy_cache = False
     if use_cache:
         if past_key_values is None:
-            past_key_values = DynamicCache()
+            past_key_values = DynamicCache(config=self.config)
         elif not isinstance(past_key_values, Cache):
             return_legacy_cache = True
             past_key_values = DynamicCache.from_legacy_cache(past_key_values)
@@ -124,7 +126,14 @@ def fixed_qwen2Model_forward(
     if getattr(self.config, "debug_mask_logits", False):
         _register_mlp_debug_hooks(self)
 
-    causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions)
+    causal_mask = create_causal_mask(
+        config=self.config,
+        input_embeds=inputs_embeds,
+        attention_mask=attention_mask,
+        cache_position=cache_position,
+        past_key_values=past_key_values,
+        position_ids=position_ids,
+    )
     if getattr(self.config, "debug_mask_logits", False) and not getattr(self, "_debug_mask_printed", False):
         print(
             f"[DEBUG][CAUSAL_MASK] attention_mask_shape={None if attention_mask is None else tuple(attention_mask.shape)} "
@@ -138,32 +147,28 @@ def fixed_qwen2Model_forward(
 
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = None
-
     for i, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
         if self.gradient_checkpointing and self.training:
-            layer_outputs = self._gradient_checkpointing_func(
+            layer_output = self._gradient_checkpointing_func(
                 decoder_layer.__call__,
                 hidden_states,
                 causal_mask,
                 position_ids,
                 past_key_values,
-                output_attentions,
                 use_cache,
                 cache_position,
                 position_embeddings,
             )
         else:
             before = torch.cuda.memory_allocated()
-            layer_outputs = decoder_layer(
+            layer_output = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
@@ -171,13 +176,7 @@ def fixed_qwen2Model_forward(
             after = torch.cuda.memory_allocated()
             # print(f"[MEM] layer {i}: {before/1e9:.2f}GiB -> {after/1e9:.2f}GiB delta={(after-before)/1e9:.2f}GiB peak={torch.cuda.max_memory_allocated()/1e9:.2f}GiB")
 
-        hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        hidden_states = layer_output
 
         torch.cuda.empty_cache()
 
@@ -186,16 +185,12 @@ def fixed_qwen2Model_forward(
     if output_hidden_states:
         all_hidden_states += (hidden_states,)
 
-    next_cache = None
-    if use_cache:
-        next_cache = next_decoder_cache.to_legacy_cache() if return_legacy_cache else next_decoder_cache
-
     if not return_dict:
-        return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        return tuple(v for v in [hidden_states, past_key_values if use_cache else None, all_hidden_states, all_self_attns] if v is not None)
 
     return BaseModelOutputWithPast(
         last_hidden_state=hidden_states,
-        past_key_values=next_cache,
+        past_key_values=past_key_values if use_cache else None,
         hidden_states=all_hidden_states,
         attentions=all_self_attns,
     )
@@ -204,16 +199,21 @@ def fixed_qwen2Model_forward(
 def qwen2_flash_attn2_forward_PyramidKV(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
+    past_key_values: Optional[Cache] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     init_pyramidkv(self, num_hidden_layers=self.config.num_hidden_layers)
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(self, "num_key_value_heads", getattr(self.config, "num_key_value_heads", self.config.num_attention_heads))
+    self.num_key_value_groups = getattr(self, "num_key_value_groups", self.num_heads // self.num_key_value_heads)
+    self.hidden_size = getattr(self, "hidden_size", self.config.hidden_size)
+    past_key_value = past_key_values
 
     if "padding_mask" in kwargs:
         warnings.warn(
@@ -251,6 +251,10 @@ def qwen2_flash_attn2_forward_PyramidKV(
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    if hasattr(self, "q_norm"):
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
     
     kv_seq_len = key_states.shape[-2]
     if past_key_value is not None:
@@ -264,16 +268,19 @@ def qwen2_flash_attn2_forward_PyramidKV(
             if self.kv_seq_len != 0:
                 kv_seq_len += self.kv_seq_len
             else:
-                kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
         else:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
 
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    if position_embeddings is None:
+        position_ids = position_ids if position_ids is not None else cache_position.unsqueeze(0)
+        position_embeddings = self.rotary_emb(value_states, position_ids)
+    cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
     mem_rope = torch.cuda.memory_allocated()
 
     # KV cache stores unrepeated (4-head) tensors to save 8x memory
-    cache_kwargs = {"sin": sin, "cos": cos}
+    cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
     if past_key_value is not None and key_states.shape[-2] == kv_seq_len:
         self.kv_seq_len = kv_seq_len
         key_states_compress, value_states_compress = self.kv_cluster.update_kv(
@@ -374,7 +381,7 @@ def qwen2_flash_attn2_forward_PyramidKV(
         timing["latency"] = time.perf_counter() - timing["request_start"]
         timing["tpot"] = timing["decode_time"] / max(timing["decode_steps"], 1)
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 def prepare_inputs_for_generation_qwen2(

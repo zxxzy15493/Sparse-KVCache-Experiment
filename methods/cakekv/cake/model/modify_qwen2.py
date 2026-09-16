@@ -9,13 +9,16 @@ import torch.utils.checkpoint
 import transformers
 
 from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.masking_utils import create_causal_mask
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 
 from transformers.models.qwen2.modeling_qwen2 import *
+from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb, repeat_kv
 
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
+from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
@@ -41,7 +44,11 @@ def qwen2_attn_forward_cake(
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, 
+    past_key_values: Optional[Cache] = None,
 ):
+
+    if past_key_values is not None:
+        past_key_value = past_key_values
 
     if isinstance(past_key_value, DynamicCache):
         past_key_value = CakeCache.from_dynamic_cache(past_key_value)
@@ -61,6 +68,11 @@ def qwen2_attn_forward_cake(
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    # Qwen3 applies per-head RMSNorm to Q/K before its shared RoPE embeddings.
+    if hasattr(self, "q_norm"):
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
 
     kv_seq_len = key_states.shape[-2]
     if past_key_value is not None:
@@ -209,7 +221,7 @@ def qwen2_attn_forward_cake(
         dropout=dropout_rate,
         sliding_window=sliding_window,
         is_causal=self.is_causal,
-        use_top_left_mask=self._flash_attn_uses_top_left_mask,
+        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
     )
 
     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
@@ -218,7 +230,7 @@ def qwen2_attn_forward_cake(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 def qwen2_model_forward_cake(
@@ -257,11 +269,19 @@ def qwen2_model_forward_cake(
     use_legacy_cache = False
     if use_cache and not isinstance(past_key_values, Cache) and not self.training:
         use_legacy_cache = True
-        past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        past_key_values = DynamicCache.from_legacy_cache(past_key_values) if past_key_values is not None else None
         logger.warning_once(
             "We detected that you are passing `past_key_values` as a tuple and this is deprecated and will be removed in v4.43. "
             "Please use an appropriate `Cache` class (https://huggingface.co/docs/transformers/v4.41.3/en/internal/generation_utils#transformers.Cache)"
         )
+
+    if use_cache:
+        if past_key_values is None:
+            past_key_values = CakeCache()
+        elif isinstance(past_key_values, DynamicCache):
+            past_key_values = CakeCache.from_dynamic_cache(past_key_values)
+        elif not isinstance(past_key_values, CakeCache):
+            past_key_values = CakeCache.from_legacy_cache(past_key_values)
 
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
@@ -288,9 +308,17 @@ def qwen2_model_forward_cake(
     if position_ids is None:
         position_ids = cache_position.unsqueeze(0)
 
-    causal_mask = self._update_causal_mask(
-        attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-    )
+    if isinstance(attention_mask, dict):
+        causal_mask = attention_mask["full_attention"]
+    else:
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
 
     hidden_states = inputs_embeds
 
@@ -300,7 +328,7 @@ def qwen2_model_forward_cake(
     # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = None
+    next_decoder_cache = past_key_values if use_cache else None
 
     for decoder_layer in self.layers:
         if output_hidden_states:
@@ -323,21 +351,18 @@ def qwen2_model_forward_cake(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
             )
 
-        hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-            past_key_values = layer_outputs[2 if output_attentions else 1]
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        if isinstance(layer_outputs, torch.Tensor):
+            hidden_states = layer_outputs
+        else:
+            hidden_states = layer_outputs[0]
+            if output_attentions and len(layer_outputs) > 1:
+                all_self_attns += (layer_outputs[1],)
 
     hidden_states = self.norm(hidden_states)
 

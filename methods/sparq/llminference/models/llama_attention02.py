@@ -142,6 +142,7 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, # MODIFIED: transformers 4.45+
     **kwargs,
   ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+    past_key_value = kwargs.get("past_key_values", past_key_value)
     if "padding_mask" in kwargs:
       warnings.warn(
         "Passing `padding_mask` is deprecated; use `attention_mask` instead.",
@@ -234,4 +235,4 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     if not output_attentions:
       attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights

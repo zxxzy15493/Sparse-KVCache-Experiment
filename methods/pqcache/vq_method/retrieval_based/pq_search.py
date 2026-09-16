@@ -50,12 +50,17 @@ def initialize_objects(config, model):
     pp_size = len(visible_devices.split(",")) if visible_devices else 1
     layer_per_rank = total_layer_num // pp_size
 
+    # Qwen3-4B has a projection head_dim (128) different from
+    # hidden_size / num_attention_heads (80).  Prefer the explicit config
+    # field; legacy Qwen2 models retain the same effective value.
+    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+
     for rank in range(pp_size):
         cache_manager = init_gpu_cache_manager(
                                         layer_cnt = config.num_hidden_layers // pp_size,
                                         n_kv_head = config.num_key_value_heads,
                                         total_max_len = config.max_seq_len,
-                                        dim = config.hidden_size // config.num_attention_heads,
+                                        dim = head_dim,
                                         device = torch.device(f"cuda:{rank}"),
                                         dtype = torch.bfloat16,
                                         compress_ratio = config.compress_ratio,
@@ -80,7 +85,7 @@ def initialize_objects(config, model):
                                                 core_per_process = MAX_CPU_IN_USE // process_cnt,
                                                 max_km_groups=config.num_key_value_heads * eval(os.environ.get("SUBVEC", "2")),
                                                 max_seq_len=config.max_seq_len,
-                                                dim=(config.hidden_size // config.num_attention_heads) // eval(os.environ.get("SUBVEC", "2")),
+                                                dim=head_dim // eval(os.environ.get("SUBVEC", "2")),
                                                 max_cent_cnt= 2 ** eval(os.environ.get("SUBBITS", "6")),
                                                 max_task_cnt=32,
                                                 metric=os.environ.get("METRIC","euc"),

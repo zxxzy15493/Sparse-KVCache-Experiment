@@ -5,6 +5,8 @@
     "llama3.1-8b-chat-8k": 7500,
     "llama3.1-8b-chat-32k": 131072,
     "qwen2.5-7b-chat-32k": 131072,
+    "qwen3-4b-chat-32k": 40960,
+    "qwen3-8b-chat-32k": 40960,
     "glm4-9b-chat-4k": 3500,
     "glm4-9b-chat-8k": 7500,
     "glm4-9b-chat-32k": 31500,

@@ -1,17 +1,14 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import os
 import torch
 from torch import nn
+from torch.nn import CrossEntropyLoss
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2ForCausalLM,
     Qwen2Model,
     Qwen2Attention,
     apply_rotary_pos_emb,
-    CausalLMOutputWithPast,
-    List,
-    Union,
-    CrossEntropyLoss,
-    BaseModelOutputWithPast,
 )
 import types
 from .utils import (

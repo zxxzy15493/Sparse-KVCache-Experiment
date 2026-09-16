@@ -281,7 +281,7 @@ def forward_eval(
       post_attn_time = time.time() - start_time
       print(f"   Post-attention processing took: {post_attn_time:.6f} seconds")
 
-    return attn_output, None, past_key_value
+    return attn_output, None
 
 
 
@@ -356,6 +356,10 @@ def load_model(fastprefillconfig=FastPrefillConfig(),name_or_path=""):
   )
   model.eval()
   for layer in model.model.layers:
+    layer.self_attn.num_heads = getattr(layer.self_attn, "num_heads", model.config.num_attention_heads)
+    layer.self_attn.num_key_value_heads = getattr(layer.self_attn, "num_key_value_heads", getattr(model.config, "num_key_value_heads", model.config.num_attention_heads))
+    layer.self_attn.num_key_value_groups = getattr(layer.self_attn, "num_key_value_groups", layer.self_attn.num_heads // layer.self_attn.num_key_value_heads)
+    layer.self_attn.hidden_size = getattr(layer.self_attn, "hidden_size", model.config.hidden_size)
     layer.self_attn.fastprefillconfig = fastprefillconfig
     layer.self_attn.forward = forward_eval.__get__(layer.self_attn)
   tokenizer = AutoTokenizer.from_pretrained(
@@ -517,7 +521,7 @@ def forward_to_save(
       post_attn_time = time.time() - start_time
       print(f"   Post-attention processing took: {post_attn_time:.6f} seconds")
 
-    return attn_output, None, past_key_value
+    return attn_output, None
 
 def load_fake_model(layer_to_save,target_len,name_or_path=""):
   model = LlamaForCausalLM.from_pretrained(

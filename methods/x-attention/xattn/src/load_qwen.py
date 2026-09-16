@@ -178,7 +178,9 @@ class FastPrefillConfig(dict):
 
     #print(p)
     if threshold is not None:
-      self.threshold = torch.ones((28, 28), device="cuda") * threshold
+      # A scalar threshold also supports models without a calibrated per-head
+      # table (for example Qwen3, which has a different layer/head layout).
+      self.threshold = float(threshold)
     elif p == 0.9:
       self.threshold = torch.tensor(qwen_fuse_90)
     elif p == 0.85:
@@ -237,6 +239,9 @@ def forward_eval(
   Returns:
     (attn_output, None, past_key_value)
   """
+  if past_key_value is None:
+    past_key_value = kwargs.pop("past_key_values", None)
+
   if self.fastprefillconfig.print_detail:
     start_time = time.time()
 
@@ -250,6 +255,11 @@ def forward_eval(
   query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
   key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
   value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+  # Qwen3 applies RMSNorm to Q/K per head before RoPE.
+  if hasattr(self, "q_norm"):
+    query_states = self.q_norm(query_states.transpose(1, 2)).transpose(1, 2)
+    key_states = self.k_norm(key_states.transpose(1, 2)).transpose(1, 2)
 
   if self.fastprefillconfig.print_detail:
     torch.cuda.synchronize()
@@ -367,7 +377,7 @@ def forward_eval(
     post_attn_time = time.time() - start_time
     print(f"   Post-attention processing took: {post_attn_time:.6f} seconds")
 
-  return attn_output, None, past_key_value
+  return attn_output, None
 
 
 def forward_to_save(
@@ -533,7 +543,7 @@ def forward_to_save(
     post_attn_time = time.time() - start_time
     print(f"   Post-attention processing took: {post_attn_time:.6f} seconds")
 
-  return attn_output, None, past_key_value
+  return attn_output, None
 
 
 def load_model(
@@ -558,6 +568,10 @@ def load_model(
   model.eval()
 
   for layer in model.model.layers:
+    layer.self_attn.num_heads = getattr(layer.self_attn, "num_heads", model.config.num_attention_heads)
+    layer.self_attn.num_key_value_heads = getattr(layer.self_attn, "num_key_value_heads", getattr(model.config, "num_key_value_heads", model.config.num_attention_heads))
+    layer.self_attn.num_key_value_groups = getattr(layer.self_attn, "num_key_value_groups", layer.self_attn.num_heads // layer.self_attn.num_key_value_heads)
+    layer.self_attn.hidden_size = getattr(layer.self_attn, "hidden_size", model.config.hidden_size)
     layer.self_attn.fastprefillconfig = fastprefillconfig
     layer.self_attn.forward = forward_eval.__get__(layer.self_attn)
 

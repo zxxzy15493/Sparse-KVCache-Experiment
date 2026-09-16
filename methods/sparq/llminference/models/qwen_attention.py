@@ -92,10 +92,10 @@ class Qwen2Attention(modeling_qwen2.Qwen2Attention):
   @staticmethod
   def _apply_rope(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor, position_ids, unsqueeze_dim: int):
     try:
-      return apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=unsqueeze_dim)
+      return apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=unsqueeze_dim)
     except TypeError:
       try:
-        return apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim)
+        return apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=unsqueeze_dim)
       except TypeError:
         return apply_rotary_pos_emb(q, k, cos, sin, position_ids)
 
@@ -128,14 +128,13 @@ class Qwen2Attention(modeling_qwen2.Qwen2Attention):
   def forward(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
-    output_attentions: bool = False,
-    use_cache: bool = False,
-    cache_position: Optional[torch.LongTensor] = None, # MODIFIED: keep parity with newer decoder APIs
+    past_key_values: Optional[Cache] = None,
+    cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
-  ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
+  ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
 
     if "padding_mask" in kwargs:
       warnings.warn(
@@ -152,7 +151,11 @@ class Qwen2Attention(modeling_qwen2.Qwen2Attention):
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-    past_key_value = getattr(self, "past_key_value", past_key_value)
+    if hasattr(self, "q_norm"):
+      query_states = self.q_norm(query_states)
+      key_states = self.k_norm(key_states)
+
+    past_key_value = past_key_values
 
     kv_seq_len = key_states.shape[-2]
     if past_key_value is not None:
@@ -160,10 +163,14 @@ class Qwen2Attention(modeling_qwen2.Qwen2Attention):
         raise ValueError(
           "Qwen2Attention needs layer_idx set when using kv cache (past_key_value is not None)."
         )
-      kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+      kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
 
-    cos, sin = self._compute_rope(self.rotary_emb, value_states, position_ids, kv_seq_len)
-    
+    if position_embeddings is None:
+      position_ids = position_ids if position_ids is not None else cache_position.unsqueeze(0)
+      cos, sin = self._compute_rope(self.rotary_emb, value_states, position_ids, kv_seq_len)
+    else:
+      cos, sin = position_embeddings
+
     query_states, key_states = self._apply_rope(query_states, key_states, cos, sin, position_ids, unsqueeze_dim=1)
 
     if past_key_value is not None:
@@ -187,7 +194,4 @@ class Qwen2Attention(modeling_qwen2.Qwen2Attention):
     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
     attn_output = self.o_proj(attn_output)
 
-    if not output_attentions:
-      attn_weights = None
-
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights

@@ -20,6 +20,7 @@ def load_model_and_tokenizer(args):
     from transformers import AutoConfig, AutoTokenizer
     from vq_method.llama31_patch import VQLlama31ForCausalLM
     from vq_method.qwen25_patch import VQQwen2ForCausalLM
+    from vq_method.qwen3_patch import VQQwen3ForCausalLM
 
     # Keep the original PQCache argument names, while receiving their values from
     # the unified CLI and the method YAML rather than a method-specific parser.
@@ -67,6 +68,11 @@ def load_model_and_tokenizer(args):
         config = AutoConfig.from_pretrained(path, trust_remote_code=args.model == "ds-qwen-1.5b")
         tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True, trust_remote_code=args.model == "ds-qwen-1.5b")
         model_class = VQQwen2ForCausalLM
+        model_kwargs = {}
+    elif args.model in {"qwen3-4b", "qwen3-8b"}:
+        config = AutoConfig.from_pretrained(path)
+        tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
+        model_class = VQQwen3ForCausalLM
         model_kwargs = {}
     else:
         raise ValueError(f"PQCache original attention does not support model '{args.model}'")

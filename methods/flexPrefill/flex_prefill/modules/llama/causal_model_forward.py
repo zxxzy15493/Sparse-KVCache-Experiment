@@ -13,14 +13,14 @@ from transformers.cache_utils import Cache
 from transformers.modeling_outputs import (
   CausalLMOutputWithPast,
 )
-from transformers.models.llama.modeling_llama import (
-  _CONFIG_FOR_DOC,
-  LLAMA_INPUTS_DOCSTRING,
-)
+from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.utils import (
   add_start_docstrings_to_model_forward,
   replace_return_docstrings,
 )
+
+_CONFIG_FOR_DOC = LlamaConfig
+LLAMA_INPUTS_DOCSTRING = ""
 
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)

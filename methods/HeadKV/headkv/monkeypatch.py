@@ -7,6 +7,7 @@ from headkv.adaptive_llama_hijack import prepare_inputs_for_generation_llama as 
 
 from headkv.adaptive_qwen2_hijack import reason_qwen2_flash_attn2_forward, adaptive_qwen2_flash_attn2_forward,adaptive_qwen2Model_forward
 from headkv.adaptive_qwen2_hijack import prepare_inputs_for_generation_qwen2 as ada_prepare_inputs_for_generation_qwen2
+from transformers.models.qwen3 import modeling_qwen3
 
 from headkv.chatglm_hijack import (
     reason_chatglm_flash_attn2_forward,
@@ -75,29 +76,29 @@ def replace_llama(method):
     if method == "AdativeKV":
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = ada_prepare_inputs_for_generation_llama
         llama_models.LlamaModel.forward = adaptive_LlamaModel_forward
-        llama_models.LlamaFlashAttention2.forward = adaptive_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = adaptive_llama_flash_attn2_forward
         llama_models.LlamaAttention.forward = adaptive_llama_flash_attn2_forward
-        llama_models.LlamaSdpaAttention.forward = adaptive_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = adaptive_llama_flash_attn2_forward
         print("use AdativeKV monkey patch for LLaMA.")
     elif method == "ReasonKV":
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = ada_prepare_inputs_for_generation_llama
         llama_models.LlamaModel.forward = adaptive_LlamaModel_forward
-        llama_models.LlamaFlashAttention2.forward = reason_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = reason_llama_flash_attn2_forward
         llama_models.LlamaAttention.forward = reason_llama_flash_attn2_forward
-        llama_models.LlamaSdpaAttention.forward = reason_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = reason_llama_flash_attn2_forward
         print("use ReasonKV monkey patch for LLaMA.")
     elif method == 'SnapKV':
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_llama
         llama_models.LlamaModel.forward = fixed_LlamaModel_forward
-        llama_models.LlamaFlashAttention2.forward = fixed_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = fixed_llama_flash_attn2_forward
         llama_models.LlamaAttention.forward = fixed_llama_flash_attn2_forward
-        llama_models.LlamaSdpaAttention.forward = fixed_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = fixed_llama_flash_attn2_forward
     elif method == 'PyramidKV':
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_llama
         llama_models.LlamaModel.forward = fixed_LlamaModel_forward
-        llama_models.LlamaFlashAttention2.forward = pyramidkv_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = pyramidkv_llama_flash_attn2_forward
         llama_models.LlamaAttention.forward = pyramidkv_llama_flash_attn2_forward
-        llama_models.LlamaSdpaAttention.forward = pyramidkv_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = pyramidkv_llama_flash_attn2_forward
 
 
 def replace_qwen2(method):
@@ -140,6 +141,17 @@ def replace_qwen2(method):
             qwen2_models.Qwen2FlashAttention2.forward = pyramidkv_qwen2_flash_attn2_forward
         if hasattr(qwen2_models, 'Qwen2SdpaAttention'):
             qwen2_models.Qwen2SdpaAttention.forward = pyramidkv_qwen2_flash_attn2_forward
+
+
+def replace_qwen3(method):
+    """Apply HeadKV's Qwen2-compatible KV selection to Qwen3 attention."""
+    check_version()
+    method = _normalize_method(method)
+    if method not in {"AdativeKV", "ReasonKV"}:
+        raise ValueError(f"Qwen3 HeadKV adaptation is not implemented for {method}")
+    target = adaptive_qwen2_flash_attn2_forward if method == "AdativeKV" else reason_qwen2_flash_attn2_forward
+    modeling_qwen3.Qwen3Model.forward = adaptive_qwen2Model_forward
+    modeling_qwen3.Qwen3Attention.forward = target
 
 
 def replace_chatglm(method, model):

@@ -35,25 +35,18 @@ from transformers.models.llama.modeling_llama import LlamaAttention, LlamaForCau
 
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
-  Qwen2Attention, 
-  Qwen2ForCausalLM,)
+  Qwen2Attention,
+  Qwen2ForCausalLM,
+  apply_rotary_pos_emb,
+  repeat_kv,
+)
+from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
 
-
-try:
-  from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2Attention,
-    Qwen2FlashAttention2,
-    Qwen2SdpaAttention,
-    apply_rotary_pos_emb,
-    repeat_kv,
-  )
-except Exception as e: # pragma: no cover
-  Qwen2Attention = None
-  Qwen2FlashAttention2 = None
-  Qwen2SdpaAttention = None
-  apply_rotary_pos_emb = None
-  repeat_kv = None
-  _IMPORT_ERROR = e
+# Transformers 4.57 uses a single attention class selected by config rather
+# than separate FlashAttention2 and SDPA subclasses.
+Qwen2FlashAttention2 = Qwen2Attention
+Qwen2SdpaAttention = Qwen2Attention
+_IMPORT_ERROR = None
 
 try:
   from transformers.cache_utils import DynamicCache
@@ -430,22 +423,22 @@ def forward(
    - Decode (q_len == 1) in later layers: apply Quest's local heavy-hitter selection on attention scores.
   """
   bsz, q_len, _ = hidden_states.size()
+  past_key_value = kwargs.get("past_key_values", past_key_value)
   if q_len > 1 or getattr(self, "layer_id", 0) < 2:
-    call_kwargs = dict(
+    call_kwargs = dict(kwargs)
+    call_kwargs.update(
       hidden_states=hidden_states,
+      position_embeddings=position_embeddings,
       attention_mask=attention_mask,
       position_ids=position_ids,
-      past_key_value=past_key_value,
-      output_attentions=output_attentions,
-      use_cache=use_cache,
+      past_key_values=past_key_value,
       cache_position=cache_position,
-      position_embeddings=position_embeddings,
-      **kwargs,
     )
 
 
     call_kwargs = _filter_kwargs_for_fn(self.flash_forward, call_kwargs)
-    return self.flash_forward(**call_kwargs)
+    outputs = self.flash_forward(**call_kwargs)
+    return outputs[0], outputs[1]
   if apply_rotary_pos_emb is None or repeat_kv is None:
     raise RuntimeError(
       "transformers.models.qwen2.modeling_qwen2 is not available in this environment. "
@@ -461,6 +454,10 @@ def forward(
   query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
   key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
   value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+  if hasattr(self, "q_norm"):
+    query_states = self.q_norm(query_states)
+    key_states = self.k_norm(key_states)
 
 
 
@@ -503,14 +500,17 @@ def forward(
   cos, sin = _get_rope_cos_sin(self, value_states, position_ids, kv_seq_len, position_embeddings)
   
 
-  query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+  try:
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+  except TypeError:
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
 
 
   if past_key_value is not None:
 
     if hasattr(past_key_value, "update") and not (isinstance(past_key_value, (tuple, list))):
-      cache_kwargs = {"sin": sin, "cos": cos}   
+      cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
       try:
         key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
       except TypeError:
@@ -737,7 +737,7 @@ def forward(
   if not output_attentions:
     attn_weights = None
 
-  return attn_output, attn_weights, past_key_value
+  return attn_output, attn_weights
 
 global layer_id
 layer_id = 28
@@ -766,7 +766,11 @@ def enable_quest_qwen_attention_eval(model, args):
       if len(list(child.children())) > 0:
         _patch_module(child)
 
-      if isinstance(child, (Qwen2Attention, Qwen2FlashAttention2, Qwen2SdpaAttention)):
+      if isinstance(child, (Qwen2Attention, Qwen2FlashAttention2, Qwen2SdpaAttention, Qwen3Attention)):
+        child.num_heads = getattr(child, "num_heads", child.config.num_attention_heads)
+        child.num_key_value_heads = getattr(child, "num_key_value_heads", getattr(child.config, "num_key_value_heads", child.config.num_attention_heads))
+        child.num_key_value_groups = getattr(child, "num_key_value_groups", child.num_heads // child.num_key_value_heads)
+        child.hidden_size = getattr(child, "hidden_size", child.config.hidden_size)
         if not hasattr(child, "flash_forward"):
           child.flash_forward = child.forward
 

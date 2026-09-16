@@ -69,6 +69,7 @@ from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
   Qwen2Attention, 
   Qwen2ForCausalLM,)
+from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention, Qwen3ForCausalLM
 try:
   from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2FlashAttention2,
@@ -837,7 +838,8 @@ class AnnAttention(nn.Module):
 
 
 Model = Union[
-  GPTNeoXForCausalLM, LlamaForCausalLM, MistralForCausalLM, GemmaForCausalLM,Qwen2ForCausalLM
+  GPTNeoXForCausalLM, LlamaForCausalLM, MistralForCausalLM, GemmaForCausalLM,
+  Qwen2ForCausalLM, Qwen3ForCausalLM
 ]
 
 
@@ -876,6 +878,10 @@ class LlamaAttentionWithANN(llama_attention02.LlamaAttention):
   ):
 
     super().__init__(config, layer_idx)
+    self.num_heads = getattr(self, "num_heads", config.num_attention_heads)
+    self.num_key_value_heads = getattr(self, "num_key_value_heads", getattr(config, "num_key_value_heads", config.num_attention_heads))
+    self.num_key_value_groups = getattr(self, "num_key_value_groups", self.num_heads // self.num_key_value_heads)
+    self.hidden_size = getattr(self, "hidden_size", config.hidden_size)
     self.settings = settings
     self.ann = AnnAttention(
       settings,
@@ -970,6 +976,10 @@ class Qwen2AttentionWithANN(qwen_attention.Qwen2Attention):
     self, config: Qwen2Config, layer_idx: Optional[int], settings: Settings
   ):
     super().__init__(config, layer_idx)
+    self.num_heads = getattr(self, "num_heads", config.num_attention_heads)
+    self.num_key_value_heads = getattr(self, "num_key_value_heads", getattr(config, "num_key_value_heads", config.num_attention_heads))
+    self.num_key_value_groups = getattr(self, "num_key_value_groups", self.num_heads // self.num_key_value_heads)
+    self.hidden_size = getattr(self, "hidden_size", config.hidden_size)
 
     self.settings = settings
     self.ann = AnnAttention(
@@ -1018,6 +1028,14 @@ def convert(model: Model, settings: Settings) -> Model:
 
   def _replace(m: nn.Module) -> Optional[nn.Module]:
 
+    if isinstance(m, Qwen3Attention):
+      replacement = _copy_attention_weights(
+        m, Qwen2AttentionWithANN(model.config, getattr(m, "layer_idx", None), settings)
+      )
+      # Preserve Qwen3's per-head RMSNorm modules on the Qwen2-compatible ANN path.
+      replacement.q_norm = m.q_norm
+      replacement.k_norm = m.k_norm
+      return replacement
     if isinstance(m, QWEN2_ATTENTION_TYPES):
       return Qwen2AttentionWithANN(model.config, getattr(m, "layer_idx", None), settings)
     if isinstance(m, GPTNeoXAttention):

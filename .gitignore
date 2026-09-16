@@ -1,7 +1,43 @@
+# Python and editor caches
 __pycache__/
+*__pycache__*
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
 .vscode/
-build/
-*.egg-info
+*.egg-info/
+
+# Experiment outputs and logs
+**/output/
+**/outputs/
+**/log/
+**/logs/
+**/results/
+**/results_*/
 *.log
 *report/
-*__pycache__*
+
+# Native/CUDA build products
+build/
+**/build-kv/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+*.so
+*.so.*
+*.o
+*.a
+*.dylib
+*.dll
+*.ptx
+
+# Generated batch-test measurements (keep the test scripts themselves)
+methods/*/duo_batch_test/*.json
+/efficiency/
+
+# Local scratch files
+/cluster_config.json
+tmp.txt

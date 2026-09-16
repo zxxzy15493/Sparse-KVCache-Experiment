@@ -9,8 +9,8 @@ from transformers.cache_utils import Cache, DynamicCache
 from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
     repeat_kv,
-    _flash_attention_forward,  # compat 4.45: class method in 4.37, module-level function in 4.45
 )
+from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.utils import (
     logging,
     is_flash_attn_2_available,
@@ -24,6 +24,7 @@ from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.masking_utils import create_causal_mask
 
 from headkv.snapkv_utils import init_headkv,init_reason_snapkv,  DynamicCacheSplitHeadFlatten
 
@@ -171,13 +172,35 @@ def adaptive_LlamaModel_forward(
         torch.cuda.synchronize()
         t = time.time()
 
-    causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions)
+    if isinstance(attention_mask, dict):
+        causal_mask = attention_mask["full_attention"]
+    else:
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
     position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
     hidden_states = inputs_embeds
 
+    # Transformers 4.57 no longer exposes these legacy attention attributes.
+    for layer in self.layers:
+        attn = layer.self_attn
+        attn.num_heads = getattr(attn, "num_heads", attn.config.num_attention_heads)
+        attn.num_key_value_heads = getattr(
+            attn, "num_key_value_heads", getattr(attn.config, "num_key_value_heads", attn.num_heads)
+        )
+        attn.num_key_value_groups = getattr(
+            attn, "num_key_value_groups", attn.num_heads // attn.num_key_value_heads
+        )
+        attn.hidden_size = getattr(attn, "hidden_size", attn.config.hidden_size)
+
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = None
+    next_decoder_cache = past_key_values if use_cache else None
 
     for decoder_layer in self.layers:
         if output_hidden_states:
@@ -200,20 +223,18 @@ def adaptive_LlamaModel_forward(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
             )
 
-        hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        if isinstance(layer_outputs, torch.Tensor):
+            hidden_states = layer_outputs
+        else:
+            hidden_states = layer_outputs[0]
+            if output_attentions and len(layer_outputs) > 1:
+                all_self_attns += (layer_outputs[1],)
 
     hidden_states = self.norm(hidden_states)
 
@@ -265,6 +286,8 @@ def adaptive_llama_flash_attn2_forward(
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     # NOTE: adakv
+    if past_key_value is None:
+        past_key_value = kwargs.pop("past_key_values", None)
     init_headkv(self)
     if past_key_value is not None and not isinstance(past_key_value, DynamicCacheSplitHeadFlatten):
         if isinstance(past_key_value, Cache) and hasattr(past_key_value, "to_legacy_cache"):
@@ -503,7 +526,7 @@ def adaptive_llama_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 def reason_llama_flash_attn2_forward(
@@ -519,6 +542,8 @@ def reason_llama_flash_attn2_forward(
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     # NOTE: reasonkv
+    if past_key_value is None:
+        past_key_value = kwargs.pop("past_key_values", None)
     init_reason_snapkv(self)
     if past_key_value is not None and not isinstance(past_key_value, DynamicCacheSplitHeadFlatten):
         if isinstance(past_key_value, Cache) and hasattr(past_key_value, "to_legacy_cache"):
@@ -746,7 +771,7 @@ def reason_llama_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 def prepare_inputs_for_generation_llama(

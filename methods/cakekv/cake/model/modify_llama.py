@@ -1,6 +1,6 @@
 import math
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -10,9 +10,12 @@ import torch.nn.functional as F
 import transformers
 
 from transformers.models.llama.modeling_llama import *
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv
+from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 from transformers.cache_utils import Cache, DynamicCache, StaticCache
+from transformers.masking_utils import create_causal_mask
 
 from transformers.models.llama.configuration_llama import LlamaConfig
 
@@ -33,7 +36,14 @@ def llama_attn_forward_cake(
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
+    past_key_values: Optional[Cache] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+
+    if past_key_values is not None:
+        past_key_value = past_key_values
+
+    if past_key_values is not None:
+        past_key_value = past_key_values
 
     if isinstance(past_key_value, StaticCache):
         raise ValueError(
@@ -201,7 +211,7 @@ def llama_attn_forward_cake(
         q_len,
         dropout=dropout_rate,
         sliding_window=getattr(self, "sliding_window", None),
-        use_top_left_mask=self._flash_attn_uses_top_left_mask,
+        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
         is_causal=self.is_causal,
     )
     if time_manager is not None:
@@ -218,7 +228,7 @@ def llama_attn_forward_cake(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 def llama_model_forward_cake(
@@ -275,11 +285,19 @@ def llama_model_forward_cake(
         use_cache and not isinstance(past_key_values, Cache) and not self.training
     ):  # kept for BC (non `Cache` `past_key_values` inputs)
         return_legacy_cache = True
-        past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        past_key_values = DynamicCache.from_legacy_cache(past_key_values) if past_key_values is not None else None
         logger.warning_once(
             "We detected that you are passing `past_key_values` as a tuple and this is deprecated and will be removed in v4.43. "
             "Please use an appropriate `Cache` class (https://huggingface.co/docs/transformers/v4.41.3/en/internal/generation_utils#transformers.Cache)"
         )
+
+    if use_cache:
+        if past_key_values is None:
+            past_key_values = CakeCache()
+        elif isinstance(past_key_values, DynamicCache):
+            past_key_values = CakeCache.from_dynamic_cache(past_key_values)
+        elif not isinstance(past_key_values, CakeCache):
+            past_key_values = CakeCache.from_legacy_cache(past_key_values)
 
     if cache_position is None:
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -289,9 +307,17 @@ def llama_model_forward_cake(
     if position_ids is None:
         position_ids = cache_position.unsqueeze(0)
 
-    causal_mask = self._update_causal_mask(
-        attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-    )
+    if isinstance(attention_mask, dict):
+        causal_mask = attention_mask["full_attention"]
+    else:
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
     hidden_states = inputs_embeds
 
     # create position embeddings to be shared across the decoder layers
@@ -300,7 +326,7 @@ def llama_model_forward_cake(
     # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = None
+    next_decoder_cache = past_key_values if use_cache else None
     for decoder_layer in self.layers:
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
@@ -322,20 +348,18 @@ def llama_model_forward_cake(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
             )
 
-        hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-            past_key_values = layer_outputs[2 if output_attentions else 1]
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        if isinstance(layer_outputs, torch.Tensor):
+            hidden_states = layer_outputs
+        else:
+            hidden_states = layer_outputs[0]
+            if output_attentions and len(layer_outputs) > 1:
+                all_self_attns += (layer_outputs[1],)
 
     hidden_states = self.norm(hidden_states)
 

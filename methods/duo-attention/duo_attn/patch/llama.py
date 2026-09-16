@@ -1,18 +1,15 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 import os
 import torch
 from torch import nn
+from torch.nn import CrossEntropyLoss
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
 from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     LlamaModel,
     repeat_kv,
     apply_rotary_pos_emb,
-    CausalLMOutputWithPast,
-    List,
-    Union,
-    CrossEntropyLoss,
-    BaseModelOutputWithPast,
 )
 import types
 from .utils import (

@@ -20,6 +20,7 @@ def load_model_and_tokenizer(args):
     from transformers import AutoConfig, AutoTokenizer
     from vq_method.llama31_patch import VQLlama31ForCausalLM
     from vq_method.qwen25_patch import VQQwen2ForCausalLM
+    from vq_method.qwen3_patch import VQQwen3ForCausalLM
     from vq_method.retrieval_based.pq_search import del_objects, initialize_objects
 
     method_args = Namespace(
@@ -79,6 +80,12 @@ def load_model_and_tokenizer(args):
         model_class = VQQwen2ForCausalLM
         model_name = args.model
         model_kwargs = {}
+    elif args.model in {"qwen3-4b", "qwen3-8b"}:
+        config = AutoConfig.from_pretrained(path)
+        tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
+        model_class = VQQwen3ForCausalLM
+        model_name = args.model
+        model_kwargs = {}
     else:
         raise ValueError(f"PQCache does not support model '{args.model}'")
 
@@ -106,7 +113,7 @@ def load_model_and_tokenizer(args):
     config.recent_ratio = method_args.recent_ratio
 
     if method_args.compressor == "pq_search":
-        config.max_seq_len = model_context_length(args.model)
+        config.max_seq_len = max(131072, model_context_length(args.model))
         config.cache_block_size = 128
         config.global_cache_size = 4096
         config.cache_topk = 32

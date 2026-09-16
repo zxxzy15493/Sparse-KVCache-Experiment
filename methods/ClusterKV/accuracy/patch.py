@@ -1,6 +1,7 @@
 import types
 from transformers.models.llama.modeling_llama import LlamaAttention
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
+from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
 from accuracy.quest_attention import forward_quest, forward_quest_glm
 from accuracy.cluster_attention import forward_cluster, forward_cluster_glm, apply_cluster_config
 from transformers import PreTrainedModel
@@ -19,6 +20,8 @@ def parse_common_args(parser):
             "llama3.1-8b-chat-8k",
             "llama3.1-8b-chat-32k",
             "qwen2.5-7b-chat-32k",
+            "qwen3-4b-chat-32k",
+            "qwen3-8b-chat-32k",
             "glm4-9b-chat-4k",
             "glm4-9b-chat-8k",
             "glm4-9b-chat-32k",
@@ -59,12 +62,16 @@ def enable_attention_eval(model_name, model, args):
             pass
         if isinstance(module, LlamaAttention):
             layer_id -= 1
-            module.layer_id = layer_id
+            module.layer_id = module.layer_idx
+            module.num_heads = module.config.num_attention_heads
+            module.num_key_value_heads = module.config.num_key_value_heads
+            module.num_key_value_groups = module.num_heads // module.num_key_value_heads
             module.flash_forward = module.forward
             module.cache_steps = args.cache_steps
             module.token_budget = args.token_budget
             module.chunk_size = args.chunk_size
             module.cluster_cache = None
+            module.prompt_len = 0
             if args.quest:
                 module.forward = types.MethodType(forward_quest, module)
                 module.gen = False
@@ -73,16 +80,20 @@ def enable_attention_eval(model_name, model, args):
                 apply_cluster_config(module, args)
             module.topk_stat = True if args.topk_stat else False
         
-        elif "qwen" in model_name and module.__class__.__name__ == "Qwen2FlashAttention2":
+        elif "qwen" in model_name and isinstance(module, (Qwen2Attention, Qwen3Attention)):
             layer_id -= 1
             module.layer_id = module.layer_idx  # for forward_cluster
-            # module.layer_idx = layer_id  # for Qwen2Attention
+            # Transformers 4.57 derives these from the projection shape instead
+            # of exposing the legacy attributes used by ClusterKV.
+            module.num_heads = module.config.num_attention_heads
+            module.num_key_value_heads = module.config.num_key_value_heads
             module.num_key_value_groups = module.num_heads // module.num_key_value_heads
             module.flash_forward = module.forward
             module.cache_steps = args.cache_steps
             module.token_budget = args.token_budget
             module.chunk_size = args.chunk_size
             module.cluster_cache = None
+            module.prompt_len = 0
             if args.cluster:
                 module.forward = types.MethodType(forward_cluster, module)
                 apply_cluster_config(module, args)

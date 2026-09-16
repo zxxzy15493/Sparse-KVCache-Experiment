@@ -17,7 +17,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 from benchmarks.common import (
-    METHODS, MODELS,
+    METHODS, MODEL_CHOICES,
     model_context_length,
     model_family,
     method_defaults,
@@ -40,7 +40,7 @@ CHAT_DATASETS = set(DEFAULT_DATASETS) - {"trec", "triviaqa", "samsum", "lsht", "
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified LongBench predictor")
     parser.add_argument("--method", choices=METHODS, default="pqcache")
-    parser.add_argument("--model", choices=MODELS, default="llama-3.1-8b")
+    parser.add_argument("--model", choices=MODEL_CHOICES, default="llama-3.1-8b")
     parser.add_argument("--datasets", nargs="+", default=None)
     parser.add_argument("--dataset", nargs="+", default=None)
     parser.add_argument("--experiment", default="default")
@@ -102,13 +102,24 @@ def truncate_prompt(tokenizer, prompt: str, max_context_length: int, family: str
 def build_chat(tokenizer, prompt: str, dataset: str) -> str:
     if dataset not in CHAT_DATASETS or not getattr(tokenizer, "chat_template", None):
         return prompt
-    return tokenizer.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False)
+    kwargs = {}
+    # Qwen3's default template enables its thinking mode.  LongBench expects a
+    # direct answer, so disable it while preserving older Qwen templates.
+    if getattr(tokenizer, "name_or_path", "").lower().find("qwen3") >= 0:
+        kwargs["enable_thinking"] = False
+    try:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False, **kwargs
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False)
 
 
 def post_process(prediction: str, model_name: str) -> str:
-    if model_name.startswith("glm-"):
+    normalized_model_name = model_name.lower()
+    if normalized_model_name.startswith("glm-") or "/glm" in normalized_model_name:
         return prediction.split("Assistant:")[-1]
-    if "qwen" in model_name:
+    if "qwen" in normalized_model_name:
         return prediction.split("<|im_end|>")[0].split("<|im_start|>")[-1].strip()
     return prediction
 

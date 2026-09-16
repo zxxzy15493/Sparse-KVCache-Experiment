@@ -10,7 +10,8 @@ def replace_llama(method):
     if method == "pyramidkv":
         print("Using PyramidKV!")
         transformers.models.llama.modeling_llama.LlamaAttention.forward = llama_attn_forward_PyramidKV
-        transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = llama_flash_attn2_forward_PyramidKV
+        if hasattr(transformers.models.llama.modeling_llama, "LlamaFlashAttention2"):
+            transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = llama_flash_attn2_forward_PyramidKV
 
     if method not in ["fullkv"]:
         transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation = prepare_inputs_for_generation_llama_new
@@ -38,6 +39,16 @@ def replace_qwen2(method):
 
     if method not in ["fullkv"]:
         qwen2_models.Qwen2ForCausalLM.prepare_inputs_for_generation = prepare_inputs_for_generation_qwen2
+
+
+def replace_qwen3(method):
+    """Install only the compatible attention patch; keep Qwen3's model loop intact."""
+    if method != "pyramidkv":
+        return
+    import transformers
+    from .qwen2_model import qwen2_flash_attn2_forward_PyramidKV
+
+    transformers.models.qwen3.modeling_qwen3.Qwen3Attention.forward = qwen2_flash_attn2_forward_PyramidKV
 
 
 def replace_chatglm(method, model):

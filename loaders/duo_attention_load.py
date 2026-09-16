@@ -46,6 +46,21 @@ def load_model_and_tokenizer(args):
         attn_implementation="flash_attention_2",
     )
 
+    # In Transformers 4.57 rotary embeddings moved from attention modules to
+    # the parent model. DuoAttention's legacy forward still accesses this field.
+    base_model = getattr(model, "model", None)
+    model_rotary_emb = getattr(base_model, "rotary_emb", None)
+    # Transformers 4.57 keeps attention head counts on config rather than the
+    # attention module; DuoAttention's kernels still read the module aliases.
+    for module in model.modules():
+        if hasattr(module, "q_proj") and hasattr(module, "k_proj"):
+            if not hasattr(module, "rotary_emb") and model_rotary_emb is not None:
+                module.rotary_emb = model_rotary_emb
+            module.num_heads = getattr(module, "num_heads", model.config.num_attention_heads)
+            module.num_key_value_heads = getattr(module, "num_key_value_heads", getattr(model.config, "num_key_value_heads", model.config.num_attention_heads))
+            module.num_key_value_groups = getattr(module, "num_key_value_groups", module.num_heads // module.num_key_value_heads)
+            module.hidden_size = getattr(module, "hidden_size", model.config.hidden_size)
+
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
 

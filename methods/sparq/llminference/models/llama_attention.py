@@ -88,8 +88,12 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-    past_key_value = getattr(self, "past_key_value", past_key_value)
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    past_key_value = kwargs.get("past_key_values", getattr(self, "past_key_value", past_key_value))
+    position_embeddings = kwargs.get("position_embeddings")
+    if position_embeddings is None:
+      cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+      cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     if past_key_value is not None:
@@ -124,4 +128,4 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     if not output_attentions:
       attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights

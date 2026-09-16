@@ -38,7 +38,12 @@ import rmm
 import time
 # torch.set_printoptions(profile="full")
 
-from clusterkv._clusterkv_knl import search_indices
+# The active vectorized gather path below no longer calls search_indices.  Keep
+# the accuracy patch runnable when the optional legacy extension is not built.
+try:
+    from clusterkv._clusterkv_knl import search_indices
+except ModuleNotFoundError:
+    search_indices = None
 from .cluster_cache_simulator import CacheSimulator
 
 CHECK_RECALL = eval(os.environ.get("CHECK_RECALL", "0"))
@@ -1116,13 +1121,12 @@ def cluster_attn_out(
 def forward_cluster(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Tuple[torch.Tensor, torch.Tensor],
     attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[DynamicCache] = None,
-    output_attentions: bool = False,
-    use_cache: bool = False,
+    past_key_values: Optional[DynamicCache] = None,
+    cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     bsz, q_len, _ = hidden_states.size()
     assert bsz == 1
 
@@ -1138,17 +1142,16 @@ def forward_cluster(
             if self.cache_steps > 0 and self.layer_id >= 2:
                 self.cluster_cache = CacheSimulator(self.layer_id, self.cache_steps+1)
         return self.flash_forward(
-            hidden_states,
-            attention_mask,
-            position_ids,
-            past_key_value,
-            output_attentions,
-            use_cache,
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            cache_position=cache_position,
             **kwargs,
         )
     
     sink = self.sink
-    prefill_key = past_key_value[self.layer_id][0]
+    prefill_key = past_key_values[self.layer_id][0]
     assert prefill_key.shape[-2] > sink
     prefill_key = prefill_key[..., sink:, :]
     # clustering for prefilled keys
@@ -1177,18 +1180,23 @@ def forward_cluster(
         .transpose(1, 2)
     )
 
-    kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[self.layer_id][0].shape[-2]
-    cos, sin = self.rotary_emb(value_states, position_ids)
-    query_states, key_states = apply_rotary_pos_emb(
-        query_states, key_states, cos, sin, position_ids
-    )
+    # Transformers 4.57 computes RoPE once in the model and passes the
+    # resulting (cos, sin) pair to every attention layer. Qwen3 additionally
+    # requires Q/K RMSNorm before RoPE.
+    if hasattr(self, "q_norm"):
+        query_states = self.q_norm(query_states)
+    if hasattr(self, "k_norm"):
+        key_states = self.k_norm(key_states)
+    cos, sin = position_embeddings
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
     # [bsz, nh, t, hd]
 
-    if past_key_value is not None:
+    if past_key_values is not None:
         # reuse k, v, self_attention
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_id)
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_values.update(
+            key_states, value_states, self.layer_id, cache_kwargs
+        )
 
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -1203,10 +1211,7 @@ def forward_cluster(
     )
     attn_output = self.o_proj(attn_output)
 
-    if not output_attentions:
-        attn_weights = None
-
-    return attn_output, attn_weights, past_key_value
+    return attn_output, None
 
 def split_tensor_along_last_dim(
         tensor: torch.Tensor,
@@ -1404,6 +1409,8 @@ def cluster_reset(model):
         module.cluster_key_ptr = None
         module.cluster_key_size = None
         module.cluster_key_size_ps = None
+        if hasattr(module, "prompt_len"):
+            module.prompt_len = 0
 
 def apply_cluster_config(module, args):
     nlist = args.nlist

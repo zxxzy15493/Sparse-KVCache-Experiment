@@ -60,8 +60,25 @@ class CakeCache(Cache):
             return 0
         return self.key_cache[layer_idx].shape[-2]
 
+    def get_usable_length(self, new_seq_length: int, layer_idx: Optional[int] = 0) -> int:
+        current_length = self.get_seq_length(layer_idx)
+        max_length = self.get_max_length()
+        if max_length is not None and current_length + new_seq_length > max_length:
+            return max_length - new_seq_length
+        return current_length
+
+    def get_mask_sizes(self, cache_position: torch.Tensor, layer_idx: int = 0) -> Tuple[int, int]:
+        return self.get_seq_length(layer_idx) + cache_position.shape[0], 0
+
     def get_max_length(self) -> Optional[int]:
         return None
+
+    def get_max_cache_shape(self) -> Optional[int]:
+        return None
+
+    @property
+    def is_compileable(self) -> bool:
+        return False
 
     def to_legacy_cache(self) -> Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor]]:
         legacy_cache = ()
@@ -82,8 +99,15 @@ class CakeCache(Cache):
     def from_dynamic_cache(cls, past_key_values: Optional[DynamicCache] = None) -> "CakeCache":
         cache = cls()
         if past_key_values is not None:
-            cache.key_cache = past_key_values.key_cache
-            cache.value_cache = past_key_values.value_cache
+            if hasattr(past_key_values, "key_cache"):
+                cache.key_cache = past_key_values.key_cache
+                cache.value_cache = past_key_values.value_cache
+            else:
+                legacy_cache = past_key_values.to_legacy_cache()
+                populated_cache = [(key, value) for key, value in legacy_cache if key is not None]
+                cache.key_cache = [key for key, _ in populated_cache]
+                cache.value_cache = [value for _, value in populated_cache]
+            cache._seen_tokens = past_key_values.get_seq_length()
 
         return cache
         
@@ -91,8 +115,15 @@ class CakeCache(Cache):
     def from_hybrid_cache(cls, past_key_values: Optional[HybridCache] = None) -> "CakeCache":
         cache = cls()
         if past_key_values is not None:
-            cache.key_cache = past_key_values.key_cache
-            cache.value_cache = past_key_values.value_cache
+            if hasattr(past_key_values, "key_cache"):
+                cache.key_cache = past_key_values.key_cache
+                cache.value_cache = past_key_values.value_cache
+            else:
+                legacy_cache = past_key_values.to_legacy_cache()
+                populated_cache = [(key, value) for key, value in legacy_cache if key is not None]
+                cache.key_cache = [key for key, _ in populated_cache]
+                cache.value_cache = [value for _, value in populated_cache]
+            cache._seen_tokens = past_key_values.get_seq_length()
 
         return cache
         

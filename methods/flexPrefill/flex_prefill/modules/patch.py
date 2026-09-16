@@ -104,11 +104,7 @@ def patch_llama_attention(model: PreTrainedModel, pattern: str):
   if pattern == "default":
     return
 
-  from transformers.models.llama.modeling_llama import (
-    LlamaFlashAttention2,
-    LlamaForCausalLM,
-    LlamaMLP,
-  )
+  from transformers.models.llama.modeling_llama import LlamaAttention, LlamaForCausalLM, LlamaMLP
 
   assert isinstance(model, LlamaForCausalLM)
 
@@ -146,7 +142,13 @@ def patch_llama_attention(model: PreTrainedModel, pattern: str):
     raise ValueError(f"unknown attention pattern {pattern}")
 
   for idx, m in model.named_modules():
-    if isinstance(m, LlamaFlashAttention2):
+    if isinstance(m, LlamaAttention):
+      m.num_heads = getattr(m, "num_heads", m.config.num_attention_heads)
+      m.num_key_value_heads = getattr(
+        m, "num_key_value_heads", getattr(m.config, "num_key_value_heads", m.num_heads)
+      )
+      m.num_key_value_groups = getattr(m, "num_key_value_groups", m.num_heads // m.num_key_value_heads)
+      m.hidden_size = getattr(m, "hidden_size", m.config.hidden_size)
       m.forward = types.MethodType(new_forward_func, m)
 
   from flex_prefill.modules.llama.causal_model_forward import (
@@ -221,11 +223,7 @@ def patch_qwen2_attention(model: PreTrainedModel, pattern: str):
   if pattern == "default":
     return
 
-  from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2FlashAttention2,
-    Qwen2ForCausalLM,
-    Qwen2MLP,
-  )
+  from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2ForCausalLM, Qwen2MLP
 
   assert isinstance(model, Qwen2ForCausalLM)
 
@@ -265,7 +263,13 @@ def patch_qwen2_attention(model: PreTrainedModel, pattern: str):
   from flex_prefill.modules.qwen2.qwen_mlp_forward import qwen2_mlp_forward
 
   for idx, m in model.named_modules():
-    if isinstance(m, Qwen2FlashAttention2):
+    if isinstance(m, Qwen2Attention):
+      m.num_heads = getattr(m, "num_heads", m.config.num_attention_heads)
+      m.num_key_value_heads = getattr(
+        m, "num_key_value_heads", getattr(m.config, "num_key_value_heads", m.num_heads)
+      )
+      m.num_key_value_groups = getattr(m, "num_key_value_groups", m.num_heads // m.num_key_value_heads)
+      m.hidden_size = getattr(m, "hidden_size", m.config.hidden_size)
       m.forward = types.MethodType(new_forward_func, m)
     if isinstance(m, Qwen2MLP):
       m.forward = types.MethodType(qwen2_mlp_forward, m)
@@ -281,6 +285,29 @@ def patch_qwen2_attention(model: PreTrainedModel, pattern: str):
     model.forward.__wrapped__ = types.MethodType(qwen2_causal_model_forward, model) 
   else:
     model.forward = types.MethodType(qwen2_causal_model_forward, model)
+
+
+def patch_qwen3_attention(model: PreTrainedModel, pattern: str):
+  """Patch Qwen3 attention while retaining its native model/decoder forward."""
+  if pattern == "default":
+    return
+  if pattern != "flex_prefill":
+    raise ValueError(f"Qwen3 support is not implemented for attention pattern {pattern!r}")
+
+  from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
+  from flex_prefill.modules.qwen2.flex_prefill_attention import qwen2_flex_prefill_attention_forward
+
+  for module in model.modules():
+    if isinstance(module, Qwen3Attention):
+      module.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
+      module.num_key_value_heads = getattr(
+        module, "num_key_value_heads", getattr(module.config, "num_key_value_heads", module.num_heads)
+      )
+      module.num_key_value_groups = getattr(
+        module, "num_key_value_groups", module.num_heads // module.num_key_value_heads
+      )
+      module.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
+      module.forward = types.MethodType(qwen2_flex_prefill_attention_forward, module)
 
 
 def disable_hf_flash_attention_check():
@@ -307,6 +334,8 @@ def patch_hf_model(model: PreTrainedModel, pattern: str, cfg: dict):
     patch_glm_attention(model, pattern)
   elif "qwen2" in model_name.lower():
     patch_qwen2_attention(model, pattern)
+  elif "qwen3" in model_name.lower():
+    patch_qwen3_attention(model, pattern)
   else:
     raise ValueError(f"unsupported model type: {model_name}")
 

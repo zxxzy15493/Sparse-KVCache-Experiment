@@ -1,12 +1,8 @@
 import torch
 
-from transformers.models.llama.modeling_llama import (
-    LlamaForCausalLM,
-    CausalLMOutputWithPast,
-    Union,
-    CrossEntropyLoss,
-    BaseModelOutputWithPast,
-)
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
+from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
+from torch.nn import CrossEntropyLoss
 from transformers.models.mistral.modeling_mistral import (
     MistralForCausalLM,
 )

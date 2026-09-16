@@ -43,7 +43,7 @@ def _update_flatten_view_fallback(old_flat, new_flat, head_lens):
 class DynamicCacheSplitHeadFlatten(Cache):
     def __init__(self) ->None:
         # Token wise List[]  Head wise KV List[torch.Tensor]
-        super().__init__()
+        super().__init__(layers=[])
         self.key_cache: List[torch.Tensor] = []
         self.value_cache: List[torch.Tensor] = []
         self._seen_tokens = 0
@@ -130,6 +130,13 @@ class DynamicCacheSplitHeadFlatten(Cache):
         if len(self.key_cache) == 0:
             return 0
         return self._seen_tokens
+
+    def get_usable_length(self, new_seq_length: int, layer_idx: Optional[int] = 0) -> int:
+        usable_length = self.get_seq_length(layer_idx)
+        max_length = self.get_max_cache_shape(layer_idx)
+        if max_length is not None:
+            usable_length = min(usable_length, max_length - new_seq_length)
+        return usable_length
 
     def get_max_length(self) -> Optional[int]:
         return None

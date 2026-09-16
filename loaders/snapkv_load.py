@@ -16,7 +16,7 @@ def load_model_and_tokenizer(args):
         sys.path.insert(0, str(snapkv_root))
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from snapkv.monkeypatch.monkeypatch import replace_llama, replace_qwen, replace_glm
+    from snapkv.monkeypatch.monkeypatch import replace_llama, replace_qwen, replace_qwen3, replace_glm
 
     method_args = Namespace(
         max_capacity_prompt=1024,
@@ -38,6 +38,8 @@ def load_model_and_tokenizer(args):
 
     replace_llama()
     replace_qwen()
+    if "qwen3" in model_name.lower():
+        replace_qwen3()
 
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(

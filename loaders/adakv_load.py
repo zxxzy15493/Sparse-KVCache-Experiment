@@ -14,9 +14,12 @@ def load_model_and_tokenizer(args):
     adakv_root = Path(__file__).resolve().parents[1] / "methods" / "Adakv"
     if str(adakv_root) not in sys.path:
         sys.path.insert(0, str(adakv_root))
+    adakv_cuda = adakv_root / "csrc"
+    if str(adakv_cuda) not in sys.path:
+        sys.path.insert(0, str(adakv_cuda))
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from headkv.monkeypatch import replace_llama, replace_qwen2, replace_chatglm
+    from headkv.monkeypatch import replace_llama, replace_qwen2, replace_qwen3, replace_chatglm
 
     method_args = Namespace(
         window_size=32, kernel_size=7, pooling="maxpool",
@@ -33,7 +36,10 @@ def load_model_and_tokenizer(args):
     device = torch.device(args.device)
 
     replace_llama("AdativeKV")
-    replace_qwen2("AdativeKV")
+    if "qwen3" in model_name.lower():
+        replace_qwen3("AdativeKV")
+    else:
+        replace_qwen2("AdativeKV")
 
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(

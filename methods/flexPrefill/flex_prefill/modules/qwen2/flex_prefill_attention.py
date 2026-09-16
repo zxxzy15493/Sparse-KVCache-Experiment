@@ -31,9 +31,11 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
   apply_rotary_pos_emb,
-  logger,
   repeat_kv,
 )
+from transformers.utils import logging
+
+logger = logging.get_logger(__name__)
 from transformers.utils import (
   add_start_docstrings,
   add_start_docstrings_to_model_forward,
@@ -56,8 +58,14 @@ def qwen2_flex_prefill_attention_forward(
   past_key_value: Optional[Cache] = None,
   output_attentions: bool = False,
   use_cache: bool = False,
+  cache_position: Optional[torch.LongTensor] = None,
+  position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+  past_key_values: Optional[Cache] = None,
   **kwargs,
 ):
+
+  if past_key_values is not None:
+    past_key_value = past_key_values
 
   if "padding_mask" in kwargs:
     warnings.warn(
@@ -81,6 +89,11 @@ def qwen2_flex_prefill_attention_forward(
     bsz, q_len, self.num_key_value_heads, self.head_dim
   ).transpose(1, 2)
 
+  # Qwen3 uses per-head RMSNorm before the model-level RoPE embeddings.
+  if hasattr(self, "q_norm"):
+    query_states = self.q_norm(query_states)
+    key_states = self.k_norm(key_states)
+
   kv_seq_len = key_states.shape[-2]
   if past_key_value is not None:
     if self.layer_idx is None:
@@ -90,14 +103,20 @@ def qwen2_flex_prefill_attention_forward(
         "with a layer index."
       )
 
-    kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+    if hasattr(past_key_value, "get_usable_length"):
+      kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+    else:
+      kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
 
 
 
-  rotary_seq_len = max(kv_seq_len, position_ids[:, -1].max().item()) + 1
-  cos, sin = get_qwen2_rope_cos_sin(
-    self.rotary_emb, value_states, position_ids, rotary_seq_len
-  )
+  if position_embeddings is not None:
+    cos, sin = position_embeddings
+  else:
+    rotary_seq_len = max(kv_seq_len, position_ids[:, -1].max().item()) + 1
+    cos, sin = get_qwen2_rope_cos_sin(
+      self.rotary_emb, value_states, position_ids, rotary_seq_len
+    )
 
 
   query_states, key_states = apply_rotary_pos_emb(
@@ -137,7 +156,7 @@ def qwen2_flex_prefill_attention_forward(
         )
 
 
-    cache_kwargs = {"sin": sin, "cos": cos}
+    cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
     key_states, value_states = past_key_value.update(
       key_states, value_states, self.layer_idx, cache_kwargs
     )
@@ -195,4 +214,4 @@ def qwen2_flex_prefill_attention_forward(
   if not output_attentions:
     attn_weights = None
 
-  return attn_output, attn_weights, past_key_value
+  return attn_output, attn_weights

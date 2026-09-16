@@ -10,6 +10,7 @@ from torch.cuda.amp import autocast
 
 import types
 import threading
+import inspect
 
 from transformers.models.llama.modeling_llama import (
   LlamaAttention,
@@ -25,6 +26,14 @@ from transformers.models.mistral.modeling_mistral import MistralAttention
 
 
 _file_lock = threading.Lock()
+
+
+def _filter_kwargs_for_fn(fn, kwargs):
+  """Keep only arguments accepted by the wrapped Transformers attention."""
+  try:
+    return {key: value for key, value in kwargs.items() if key in inspect.signature(fn).parameters}
+  except Exception:
+    return kwargs
 
 layerID=1
 
@@ -273,20 +282,23 @@ def forward(
   **kwargs,
 ):
   bsz, q_len, _ = hidden_states.size()
+  past_key_value = kwargs.get("past_key_values", past_key_value)
+  position_embeddings = kwargs.get("position_embeddings")
 
 
 
 
   if q_len > 1 or self.layer_id < 2:
-    return self.flash_forward(
-      hidden_states,
-      attention_mask,
-      position_ids,
-      past_key_value,
-      output_attentions,
-      use_cache,
-      **kwargs,
+    call_kwargs = dict(kwargs)
+    call_kwargs.update(
+      hidden_states=hidden_states,
+      position_embeddings=position_embeddings,
+      attention_mask=attention_mask,
+      past_key_values=past_key_value,
+      cache_position=kwargs.get("cache_position"),
     )
+    outputs = self.flash_forward(**_filter_kwargs_for_fn(self.flash_forward, call_kwargs))
+    return outputs[0], outputs[1]
   query_states = (
     self.q_proj(hidden_states)
     .view(bsz, q_len, self.num_heads, self.head_dim)
@@ -308,18 +320,16 @@ def forward(
   
   # =========================
   # =========================
-  cos, sin = self.rotary_emb(
-    value_states,
-    position_ids.to(value_states.device),
-  )
+  if position_embeddings is None:
+    position_ids = position_ids if position_ids is not None else kwargs["cache_position"].unsqueeze(0)
+    cos, sin = self.rotary_emb(value_states, position_ids.to(value_states.device))
+  else:
+    cos, sin = position_embeddings
 
-  query_states, key_states = apply_rotary_pos_emb(
-    query_states,
-    key_states,
-    cos,
-    sin,
-    position_ids,
-  )
+  try:
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+  except TypeError:
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
   # =========================
   # =========================
@@ -329,6 +339,7 @@ def forward(
         key_states,
         value_states,
         layer_idx=self.layer_idx,
+        cache_kwargs={"sin": sin, "cos": cos, "cache_position": kwargs.get("cache_position")},
       )
   else:
     if past_key_value is not None:
@@ -609,7 +620,7 @@ def forward(
   else:
     attn_weights_to_return = None
 
-  return attn_output, attn_weights_to_return, past_key_value
+  return attn_output, attn_weights_to_return
 
 
 global layer_id
@@ -627,6 +638,14 @@ def enable_quest_attention_eval(model, args):
     global layer_id
     if isinstance(module, (LlamaAttention, MistralAttention)):
       layer_id -= 1
+      module.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
+      module.num_key_value_heads = getattr(
+        module, "num_key_value_heads", getattr(module.config, "num_key_value_heads", module.num_heads)
+      )
+      module.num_key_value_groups = getattr(
+        module, "num_key_value_groups", module.num_heads // module.num_key_value_heads
+      )
+      module.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
       model._modules[name].layer_id = layer_id
 
       model._modules[name].flash_forward = model._modules[name].forward

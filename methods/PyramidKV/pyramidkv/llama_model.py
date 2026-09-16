@@ -96,7 +96,18 @@ def llama_attn_forward_PyramidKV(
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     import time
+    past_key_value = kwargs.get("past_key_values", past_key_value)
+    position_embeddings = kwargs.get("position_embeddings")
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(
+        self, "num_key_value_heads", getattr(self.config, "num_key_value_heads", self.num_heads)
+    )
+    self.num_key_value_groups = getattr(
+        self, "num_key_value_groups", self.num_heads // self.num_key_value_heads
+    )
+    self.hidden_size = getattr(self, "hidden_size", self.config.hidden_size)
     call_start = time.perf_counter()
+    tm = getattr(self.config, "_time_manager", None)
     bsz, q_len, _ = hidden_states.size()
     timing = getattr(self, "_cake_timing", None)
     # re-init timing on every prefill or first decode
@@ -155,11 +166,22 @@ def llama_attn_forward_PyramidKV(
             if self.kv_seq_len != 0:
                 kv_seq_len += self.kv_seq_len
             else:
-                kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                kv_seq_len += (
+                    past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                    if hasattr(past_key_value, "get_usable_length")
+                    else past_key_value.get_seq_length(self.layer_idx)
+                )
         else:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += (
+                past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                if hasattr(past_key_value, "get_usable_length")
+                else past_key_value.get_seq_length(self.layer_idx)
+            )
 
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    if position_embeddings is None:
+        cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+        cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     if past_key_value is not None:
@@ -239,7 +261,7 @@ def llama_attn_forward_PyramidKV(
         timing["latency"] = time.perf_counter() - timing["request_start"]
         timing["tpot"] = timing["decode_time"] / max(timing["decode_steps"], 1)
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 
 
@@ -404,7 +426,8 @@ def llama_flash_attn2_forward_PyramidKV(
 
     return attn_output, attn_weights, past_key_value
 
-from transformers.models.llama.modeling_llama import _prepare_4d_causal_attention_mask_with_cache_position, StaticCache
+from transformers.cache_utils import StaticCache
+from transformers.masking_utils import create_causal_mask
 
 def prepare_inputs_for_generation_llama_new(
         self,
@@ -457,18 +480,16 @@ def prepare_inputs_for_generation_llama_new(
                 batch_size, sequence_length = model_inputs["input_ids"].shape
                 device = model_inputs["input_ids"].device
 
-            dtype = self.lm_head.weight.dtype
-            min_dtype = torch.finfo(dtype).min
-
-            attention_mask = _prepare_4d_causal_attention_mask_with_cache_position(
-                attention_mask,
-                sequence_length=sequence_length,
-                target_length=past_key_values.get_max_length(),
-                dtype=dtype,
-                device=device,
-                min_dtype=min_dtype,
+            input_embeds = model_inputs["inputs_embeds"]
+            if input_embeds is None:
+                input_embeds = self.model.embed_tokens(model_inputs["input_ids"])
+            attention_mask = create_causal_mask(
+                config=self.config,
+                input_embeds=input_embeds,
+                attention_mask=attention_mask,
                 cache_position=cache_position,
-                batch_size=batch_size,
+                past_key_values=past_key_values,
+                position_ids=position_ids,
             )
 
         # import pdb;pdb.set_trace()
@@ -555,4 +576,3 @@ def prepare_inputs_for_generation_llama(
         }
     )
     return model_inputs
-

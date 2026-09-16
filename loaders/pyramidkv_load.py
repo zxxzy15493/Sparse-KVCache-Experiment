@@ -16,7 +16,7 @@ def load_model_and_tokenizer(args):
         sys.path.insert(0, str(pyramidkv_root))
 
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-    from pyramidkv.monkeypatch import replace_llama, replace_qwen2, replace_chatglm
+    from pyramidkv.monkeypatch import replace_llama, replace_qwen2, replace_qwen3, replace_chatglm
 
     method_args = Namespace(
         window_size=64, kernel_size=5, pooling="avgpool", pyram_beta=20,
@@ -37,6 +37,8 @@ def load_model_and_tokenizer(args):
 
     if "llama" in model_name_lower:
         replace_llama("pyramidkv")
+    elif "qwen3" in model_name_lower:
+        replace_qwen3("pyramidkv")
     elif "qwen" in model_name_lower:
         replace_qwen2("pyramidkv")
 

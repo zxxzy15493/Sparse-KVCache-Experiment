@@ -4,6 +4,9 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+import torch
+from transformers import AutoTokenizer
+
 from benchmarks.common import method_defaults, parse_set
 
 
@@ -52,7 +55,43 @@ def load_model_and_tokenizer(args):
     method_args = _build_method_args(args)
     path = args.model_path
 
-    if "llama" in method_args.model_name.lower():
+    if method_args.model_name.lower().startswith("qwen3"):
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+        from xattn.src.load_qwen import FastPrefillConfig, forward_eval
+
+        model = Qwen3ForCausalLM.from_pretrained(
+            path,
+            device_map="auto",
+            dtype=torch.bfloat16,
+        )
+        model.eval()
+        # Qwen3 has 36 layers and a distinct Q/K normalization path. The
+        # method's published Qwen2 table is 28x28, so use the documented 0.9
+        # threshold as a scalar on global-attention layers. Preserve native
+        # attention on Qwen3's sliding-window layers.
+        threshold = method_args.threshold
+        if threshold is None:
+            threshold = method_args.p
+        qwen3_config = FastPrefillConfig(
+            threshold=threshold,
+            print_detail=method_args.print_detail,
+            stride=method_args.stride,
+            metric=method_args.metric,
+            p=method_args.p,
+        )
+        for layer in model.model.layers:
+            attention = layer.self_attn
+            if attention.sliding_window is not None:
+                continue
+            attention.num_heads = model.config.num_attention_heads
+            attention.num_key_value_heads = model.config.num_key_value_heads
+            attention.num_key_value_groups = model.config.num_attention_heads // model.config.num_key_value_heads
+            attention.hidden_size = model.config.hidden_size
+            attention.fastprefillconfig = qwen3_config
+            attention.forward = forward_eval.__get__(attention, type(attention))
+        tokenizer = AutoTokenizer.from_pretrained(path)
+        model_type = "qwen3"
+    elif "llama" in method_args.model_name.lower():
         from xattn.src.load_llama import FastPrefillConfig, load_model
         print("llama model")
         model_type = "llama"

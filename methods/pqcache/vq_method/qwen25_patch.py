@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from typing import List, Optional, Tuple, Union
 from transformers.cache_utils import Cache, DynamicCache
+from transformers.masking_utils import create_causal_mask
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2ForCausalLM,
@@ -52,18 +53,15 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         bsz, q_len, _ = hidden_states.size()
         assert bsz == 1, "Do not support bsz > 1 yet."
-        first_time = (position_ids.nelement() != 1)
+        first_time = q_len != 1
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -79,24 +77,22 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        # TODO: may be buggy, leave it for now
-        if not first_time:
-            kv_seq_len = position_ids[0][0] + 1
-        cos, sin = self.rotary_emb(value_states, position_ids)
-        # Qwen2's apply_rotary_pos_emb requires position_ids as the 5th argument
-        
-             
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         pre_stage_name = 'prefill_preAttn_ffn' if first_time else 'decode_preAttn_ffn'
 
         if first_time:
             self.seq_cnt += 1
             self.fwd_cnt = 0
 
+        attn_weights = None
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         if self.compressor == "original":
 
-            if past_key_value is not None:
-                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, None)
+            if past_key_values is not None:
+                key_states, value_states = past_key_values.update(
+                    key_states, value_states, self.layer_idx, cache_kwargs
+                )
             if _SYNC_TEST_TIME:
                 stage_end(pre_stage_name, self.layer_idx)
 
@@ -124,7 +120,13 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
                 # begin = time.perf_counter()
                 attn_output, _ = self.kvcache_quantizer.prefill_attn(query_states, (key_states, value_states))
                 
-                _,_ = past_key_value.update(key_states[...,:1].clone(), value_states[...,:1].clone(), self.layer_idx, None)
+                if past_key_values is not None:
+                    prefill_cache_kwargs = dict(cache_kwargs)
+                    if cache_position is not None:
+                        prefill_cache_kwargs["cache_position"] = cache_position[:1]
+                    _, _ = past_key_values.update(
+                        key_states[..., :1].clone(), value_states[..., :1].clone(), self.layer_idx, prefill_cache_kwargs
+                    )
                 # end = time.perf_counter()
                 # print(f"prefill time {end - begin }, layer id {self.layer_idx}",flush=True)
             else:
@@ -141,8 +143,10 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
         else:
             
             
-            assert past_key_value is not None
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, None)
+            assert past_key_values is not None
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
             if _SYNC_TEST_TIME:
                 stage_end(pre_stage_name, self.layer_idx)
             kv = (key_states, value_states)
@@ -237,17 +241,19 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
         attn_output = attn_output.transpose(1, 2).contiguous()
         if _SYNC_TEST_TIME:
             stage_begin(post_stage_name, self.layer_idx)
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim)
         attn_output = self.o_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
 
         self.fwd_cnt += 1
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attn_weights
 
     attn.forward = types.MethodType(forward, attn)
+    # Transformers 4.57 derives these values in the attention implementation
+    # instead of storing the legacy attributes used by this custom kernel.
+    attn.num_heads = config.num_attention_heads
+    attn.num_key_value_heads = config.num_key_value_heads
+    attn.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
     attn.use_flash_attn = True
     attn.fwd_cnt = 0
     attn.idx = idx
@@ -346,14 +352,13 @@ def Qwen2DecoderLayerPatch(layer: Qwen2DecoderLayer, config, layer_idx):
                 hidden_states: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None,
                 position_ids: Optional[torch.LongTensor] = None,
-                past_key_value: Optional[Cache] = None,
-                output_attentions: Optional[bool] = False,
+                past_key_values: Optional[Cache] = None,
                 use_cache: Optional[bool] = False,
                 cache_position: Optional[torch.LongTensor] = None,
                 position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
                 **kwargs,):
 
-        first_time = (position_ids.nelement() != 1)
+        first_time = hidden_states.shape[1] != 1
         residual = hidden_states.clone()
         batch, seq_len, embed_dim = hidden_states.shape
         # hidden_states = self.input_layernorm(hidden_states)
@@ -367,13 +372,10 @@ def Qwen2DecoderLayerPatch(layer: Qwen2DecoderLayer, config, layer_idx):
             )
 
         # Self Attention. Attention-kernel timing is recorded inside self_attn.
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
+            past_key_values=past_key_values,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
@@ -394,14 +396,7 @@ def Qwen2DecoderLayerPatch(layer: Qwen2DecoderLayer, config, layer_idx):
         if _SYNC_TEST_TIME:
             stage_end(stage_name, layer_idx)
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-        return outputs
+        return hidden_states
 
     layer.forward = types.MethodType(forward, layer)
     layer.device = layer2device(layer_idx, config.num_hidden_layers)
@@ -418,106 +413,68 @@ def PPQwen2ModelPatch(model: Qwen2Model, config):
         past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        assert inputs_embeds is None
         if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError(
-                "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
-            )
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        return_legacy_cache = False
-        if use_cache and not isinstance(past_key_values, Cache):
-            return_legacy_cache = True
-            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            logger.warning_once(
-                "We detected that you are passing `past_key_values` as a tuple and this is deprecated and will be removed in v4.43. "
-                "Please use an appropriate Cache class (https://huggingface.co/docs/transformers/v4.41.3/en/internal/generation_utils#transformers.Cache)"
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache(config=self.config)
+
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
 
-        if cache_position is None or position_ids is None:
-            raise Exception("We don't expect this case to happen")
-
-        causal_mask = None
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
+        )
 
         hidden_states = inputs_embeds
 
 
-        position_embeddings = None
-
-
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        next_decoder_cache = None
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for idx, decoder_layer in enumerate(self.layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
-            past_key_value = past_key_values[idx] if len(past_key_values) == len(self.layers) else None
-            if past_key_value is not None:
-                assert past_key_values[idx][0].device == get_device(decoder_layer)
-
             if hidden_states.device != decoder_layer.device:
                 hidden_states = hidden_states.to(decoder_layer.device)
-
-            if position_ids.device != decoder_layer.device:
-                position_ids = position_ids.to(decoder_layer.device)
-
-            if attention_mask is not None and attention_mask.device != decoder_layer.device:
-                attention_mask = attention_mask.to(decoder_layer.device)
-
-            layer_outputs = decoder_layer(
+            layer_device = decoder_layer.device
+            layer_position_ids = position_ids.to(layer_device)
+            layer_cache_position = cache_position.to(layer_device)
+            layer_position_embeddings = tuple(embedding.to(layer_device) for embedding in position_embeddings)
+            layer_attention_mask = causal_mask.to(layer_device) if causal_mask is not None else None
+            hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=causal_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
+                attention_mask=layer_attention_mask,
+                position_ids=layer_position_ids,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
+                cache_position=layer_cache_position,
+                position_embeddings=layer_position_embeddings,
+                **kwargs,
             )
-
-            hidden_states = layer_outputs[0]
-
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
 
         if hidden_states.device != get_device(self.norm):
             hidden_states = hidden_states.to(get_device(self.norm))
         hidden_states = self.norm(hidden_states)
 
-
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-
-        next_cache = next_decoder_cache if use_cache else None
-        if return_legacy_cache:
-            next_cache = next_cache.to_legacy_cache()
-
-        if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
+            past_key_values=past_key_values if use_cache else None,
         )
 
 
@@ -628,6 +585,8 @@ class VQQwen2ForCausalLM(Qwen2ForCausalLM):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
             cache_position: Optional[torch.LongTensor] = None,
+            logits_to_keep: Union[int, torch.Tensor] = 1,
+            **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -642,10 +601,8 @@ class VQQwen2ForCausalLM(Qwen2ForCausalLM):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             cache_position=cache_position,
+            **kwargs,
         )
 
         hidden_states = outputs[0]

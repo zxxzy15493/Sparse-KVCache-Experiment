@@ -27,12 +27,14 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
-  _CONFIG_FOR_DOC,
-  QWEN2_INPUTS_DOCSTRING,
   apply_rotary_pos_emb,
-  logger,
   repeat_kv,
 )
+from transformers.utils import logging
+
+logger = logging.get_logger(__name__)
+_CONFIG_FOR_DOC = Qwen2Config
+QWEN2_INPUTS_DOCSTRING = ""
 from transformers.utils import (
   add_start_docstrings,
   add_start_docstrings_to_model_forward,

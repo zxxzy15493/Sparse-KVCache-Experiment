@@ -25,6 +25,7 @@ def load_model_and_tokenizer(args):
         replace_flashllama_attn_with_cakeattn,
         replace_flashmistral_attn_with_cakeattn,
         replace_flashqwen2_attn_with_cakeattn,
+        replace_flashqwen3_attn_with_cakeattn,
         replace_chatglm_attn_with_cakeattn,
     )
     from cakekv.cake.utils import CompressConfig
@@ -48,6 +49,8 @@ def load_model_and_tokenizer(args):
         replace_flashllama_attn_with_cakeattn()
     elif "mistral" in model_name:
         replace_flashmistral_attn_with_cakeattn()
+    elif "qwen3" in model_name.lower():
+        replace_flashqwen3_attn_with_cakeattn()
     elif "qwen" in model_name:
         replace_flashqwen2_attn_with_cakeattn()
 
@@ -72,6 +75,18 @@ def load_model_and_tokenizer(args):
 
     layers = _get_model_layers(model)
     n_layers = len(layers)
+    # Transformers 4.57 keeps the head dimensions on config and removes the
+    # corresponding legacy fields from attention modules used by CakeKV.
+    for layer in layers:
+        attn = layer.self_attn
+        attn.num_heads = getattr(attn, "num_heads", attn.config.num_attention_heads)
+        attn.num_key_value_heads = getattr(
+            attn, "num_key_value_heads", getattr(attn.config, "num_key_value_heads", attn.num_heads)
+        )
+        attn.num_key_value_groups = getattr(
+            attn, "num_key_value_groups", attn.num_heads // attn.num_key_value_heads
+        )
+        attn.hidden_size = getattr(attn, "hidden_size", attn.config.hidden_size)
 
     if not isinstance(window_size, list):
         window_size = [window_size] * n_layers

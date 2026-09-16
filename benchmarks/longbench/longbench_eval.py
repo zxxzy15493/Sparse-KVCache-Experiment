@@ -35,8 +35,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n2eos", action="store_true")
     args = parser.parse_args(argv)
     if args.budget is None:
-        if args.method not in {"topp", "topp32","flexprefill","xattention"}:
-            parser.error("--budget is required except for topp, topp32, xattention, and flexprefill")
+        if args.method not in {"topp", "topp32", "flexprefill", "xattention", "duo-attention"}:
+            parser.error("--budget is required except for topp, topp32, xattention, flexprefill, and duo-attention")
         args.budget = method_defaults(args.method)["budget"]
     return args
 
