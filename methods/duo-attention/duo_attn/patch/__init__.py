@@ -12,6 +12,7 @@ _sys.modules.setdefault("pkg_resources", _PkgResourcesShim)
 from .llama import (
     enable_llama_duo_attention_training,
     enable_llama_duo_attention_eval,
+    enable_llama_duo_attention_static_kv_cache_eval,
     get_llama_full_attention_heads,
     set_llama_full_attention_heads,
     map_llama_full_attention_heads,
@@ -93,13 +94,27 @@ def enable_duo_attention_eval(
     print(
         f"Enabling DuoAttention evaluation using sink size {sink_size} and recent size {recent_size}"
     )
-    if "llama" in model.config.model_type or "qwen2" in model.config.model_type:
-        enable_llama_duo_attention_eval(
-            model,
-            full_attention_heads,
-            sink_size,
-            recent_size,
-        )
+    if (
+        "llama" in model.config.model_type
+        or "qwen2" in model.config.model_type
+        or "qwen3" in model.config.model_type
+    ):
+        if os.environ.get("DUO_STATIC", "0") == "1":
+            # DUO_STATIC=1: static pre-allocated KV cache (original flash forward,
+            # algorithm unchanged). Otherwise the default dynamic tuple cache.
+            enable_llama_duo_attention_static_kv_cache_eval(
+                model,
+                full_attention_heads,
+                sink_size,
+                recent_size,
+            )
+        else:
+            enable_llama_duo_attention_eval(
+                model,
+                full_attention_heads,
+                sink_size,
+                recent_size,
+            )
     elif "mistral" in model.config.model_type or "mixtral" in model.config.model_type:
         enable_mistral_duo_attention_eval(
             model,

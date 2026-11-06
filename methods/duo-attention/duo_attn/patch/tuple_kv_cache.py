@@ -483,12 +483,16 @@ def old_llama_decoder_layer_forward(
         use_cache=use_cache,
         padding_mask=padding_mask,
     )
+    if residual.device != hidden_states.device:
+        residual = residual.to(hidden_states.device)
     hidden_states = residual + hidden_states
 
     # Fully Connected
     residual = hidden_states
     hidden_states = self.post_attention_layernorm(hidden_states)
     hidden_states = self.mlp(hidden_states)
+    if residual.device != hidden_states.device:
+        residual = residual.to(hidden_states.device)
     hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)

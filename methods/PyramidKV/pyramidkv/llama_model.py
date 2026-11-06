@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,7 +14,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils import (
     logging,
 )
-from .pyramidkv_utils import init_pyramidkv
+from .pyramidkv_utils import init_pyramidkv, global_kv_len, sdpa_decode_with_form
 import math
 from flash_attn import flash_attn_func, flash_attn_varlen_func
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
@@ -215,16 +216,52 @@ def llama_attn_forward_PyramidKV(
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+    # [attn-form ablation] decode-only switch; retained tokens and their order are unchanged.
+    #   0 (default): eager attention at each layer's exact length
+    #   1:          native SDPA at each layer's exact length (kernel control)
+    #   2:          native SDPA after right-padding every layer's KV to the global max
+    #               KV length (uniform form; padded slots are masked out)
+    # Padding is compute-only: the KV cache storage is left untouched.
+    attn_form = "0"
+    if (not is_prefill) and q_len == 1:
+        attn_form = os.environ.get("PYRAMIDKV_ATTN_FORM", "0")
 
-    if attention_mask is not None:  # no matter the length, we just slice it
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
+    if attn_form in ("1", "2"):
+        target_len = key_states.shape[-2]
+        if attn_form == "2":
+            target_len = global_kv_len(past_key_value, key_states.shape[-2])
+        attn_output = sdpa_decode_with_form(
+            query_states.transpose(1, 2),
+            key_states.transpose(1, 2),
+            value_states.transpose(1, 2),
+            attention_mask,
+            target_len,
+        ).transpose(1, 2)
+        attn_weights = None
+    else:
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-    # upcast attention to fp32
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-    attn_output = torch.matmul(attn_weights, value_states)
+        if attention_mask is not None:  # no matter the length, we just slice it
+            if attention_mask.dim() == 2:
+                key_length = key_states.shape[-2]
+                key_padding = attention_mask[:, -key_length:].to(torch.bool)
+                query_positions = torch.arange(q_len, device=attn_weights.device) + key_length - q_len
+                key_positions = torch.arange(key_length, device=attn_weights.device)
+                allowed = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1)
+                causal_mask = torch.full(
+                    (bsz, 1, q_len, key_length), torch.finfo(attn_weights.dtype).min,
+                    device=attn_weights.device, dtype=attn_weights.dtype,
+                )
+                causal_mask.masked_fill_(allowed[None, None] & key_padding[:, None, None, :], 0)
+            else:
+                causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights = attn_weights + causal_mask
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = torch.nan_to_num(attn_weights)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_output = torch.matmul(attn_weights, value_states)
 
     if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
         raise ValueError(
@@ -277,6 +314,14 @@ def llama_flash_attn2_forward_PyramidKV(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     tm = getattr(getattr(self, "config", None), "_time_manager", None)
     init_pyramidkv(self, num_hidden_layers=self.config.num_hidden_layers)
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(
+        self, "num_key_value_heads", getattr(self.config, "num_key_value_heads", self.num_heads)
+    )
+    self.num_key_value_groups = getattr(
+        self, "num_key_value_groups", self.num_heads // self.num_key_value_heads
+    )
+    self.hidden_size = getattr(self, "hidden_size", self.config.hidden_size)
     # LlamaFlashAttention2 attention does not support output_attentions
     if "padding_mask" in kwargs:
         warnings.warn(
@@ -323,7 +368,11 @@ def llama_flash_attn2_forward_PyramidKV(
         else:
             kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
 
-    cos, sin = self.rotary_emb(value_states, position_ids)
+    position_embeddings = kwargs.get("position_embeddings")
+    if position_embeddings is None:
+        cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+        cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
     if past_key_value is not None:
@@ -405,9 +454,29 @@ def llama_flash_attn2_forward_PyramidKV(
             tm.record_pref_pure_start(self.layer_idx)
         else:
             tm.record_dec_pure_start(self.layer_idx)
-    attn_output = _flash_attention_forward(
-        self, query_states, key_states, value_states, attention_mask, q_len, dropout=dropout_rate
-    )
+    # [attn-form ablation] Decode-only switch that changes only the *shape* of the
+    # attention computation (retained tokens and their order stay identical):
+    #   0 (default): original flash attention at each layer's exact length
+    #   1:          native SDPA at each layer's exact length
+    #   2:          native SDPA after right-padding every layer's KV to the global
+    #               max KV length (uniform form; padded slots are masked out)
+    # Padding is compute-only: the KV cache storage is left untouched.
+    attn_form = "0"
+    if (not is_prefill) and q_len == 1:
+        attn_form = os.environ.get("PYRAMIDKV_ATTN_FORM", "0")
+    if attn_form == "1":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask, key_states.shape[1]
+        )
+    elif attn_form == "2":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            global_kv_len(past_key_value, key_states.shape[1]),
+        )
+    else:
+        attn_output = flash_attn_func(
+            query_states, key_states, value_states, dropout_p=dropout_rate, causal=True
+        )
     if tm is not None:
         if is_prefill:
             tm.record_pref_pure_end(self.layer_idx)
@@ -424,7 +493,7 @@ def llama_flash_attn2_forward_PyramidKV(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights
 
 from transformers.cache_utils import StaticCache
 from transformers.masking_utils import create_causal_mask
@@ -441,7 +510,11 @@ def prepare_inputs_for_generation_llama_new(
         **kwargs,
     ):
         num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
-        cache_len = past_key_values.get_seq_length()
+        cache_len = (
+            past_key_values.get_seq_length()
+            if past_key_values is not None
+            else 0
+        )
         if cache_len == 0:
             for layer in self.model.layers:
                 layer.self_attn.kv_seq_len = 0
@@ -511,7 +584,6 @@ def prepare_inputs_for_generation_llama_new(
 def prepare_inputs_for_generation_llama(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
-    import pdb;pdb.set_trace()
     if past_key_values is None:
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
@@ -535,8 +607,6 @@ def prepare_inputs_for_generation_llama(
         # input_ids based on the past_length.
         elif past_length < input_ids.shape[1]:
             input_ids = input_ids[:, past_length:]
-
-        import pdb;pdb.set_trace()
 
 
 

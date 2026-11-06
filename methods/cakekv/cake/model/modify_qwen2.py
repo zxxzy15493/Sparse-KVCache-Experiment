@@ -1,4 +1,5 @@
 import math
+import os
 import time
 
 import torch
@@ -31,7 +32,7 @@ from ..cake_cache import CakeCache, CakeDecodingKVCache_LayerWise
 
 logger = logging.get_logger(__name__)
 
-from ..utils import calculate_entropy
+from ..utils import calculate_entropy, global_kv_len, sdpa_decode_with_form
 
 
 def qwen2_attn_forward_cake(
@@ -60,6 +61,11 @@ def qwen2_attn_forward_cake(
                 v_seq_dim=2
                 )
     bsz, q_len, _ = hidden_states.size()
+    # transformers>=4.48 no longer sets these attributes on the attention module
+    if not hasattr(self, "num_heads"):
+        self.num_heads = self.config.num_attention_heads
+    if not hasattr(self, "num_key_value_heads"):
+        self.num_key_value_heads = self.config.num_key_value_heads
 
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
@@ -212,19 +218,41 @@ def qwen2_attn_forward_cake(
     else:
         sliding_window = None
 
-    attn_output = _flash_attention_forward(
-        query_states,
-        key_states,
-        value_states,
-        attention_mask,
-        q_len,
-        dropout=dropout_rate,
-        sliding_window=sliding_window,
-        is_causal=self.is_causal,
-        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
-    )
+    # [attn-form ablation] Decode-only switch that changes only the *shape* of the
+    # attention computation (retained tokens and their order stay identical):
+    #   0 (default): original flash attention at each layer's exact length
+    #   1:          native SDPA at each layer's exact length
+    #   2:          native SDPA after right-padding every layer's KV to the global
+    #               max KV length (uniform form; padded slots are masked out)
+    # Padding is compute-only: the KV cache storage is left untouched.
+    attn_form = "0"
+    if q_len == 1:
+        attn_form = os.environ.get("CAKEKV_ATTN_FORM", "0")
+    if attn_form == "1":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            key_states.shape[1], sliding_window=sliding_window,
+        )
+    elif attn_form == "2":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            global_kv_len(past_key_value, key_states.shape[1]),
+            sliding_window=sliding_window,
+        )
+    else:
+        attn_output = _flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            q_len,
+            dropout=dropout_rate,
+            sliding_window=sliding_window,
+            is_causal=self.is_causal,
+            use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
+        )
 
-    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+    attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features).contiguous()
     attn_output = self.o_proj(attn_output)
 
     if not output_attentions:

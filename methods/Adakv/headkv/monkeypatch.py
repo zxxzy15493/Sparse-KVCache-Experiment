@@ -80,11 +80,13 @@ def replace_llama(method):
         getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = adaptive_llama_flash_attn2_forward
         print("use AdativeKV monkey patch for LLaMA.")
     elif method == "ReasonKV":
+        # NOTE: reason_llama_flash_attn2_forward is not implemented. Reuse the
+        # AdativeKV batch decode path so ReasonKV supports multi-batch inference.
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = ada_prepare_inputs_for_generation_llama
         llama_models.LlamaModel.forward = adaptive_LlamaModel_forward
-        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = reason_llama_flash_attn2_forward
-        llama_models.LlamaAttention.forward = reason_llama_flash_attn2_forward
-        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = reason_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaFlashAttention2", llama_models.LlamaAttention).forward = adaptive_llama_flash_attn2_forward
+        llama_models.LlamaAttention.forward = adaptive_llama_flash_attn2_forward
+        getattr(llama_models, "LlamaSdpaAttention", llama_models.LlamaAttention).forward = adaptive_llama_flash_attn2_forward
         print("use ReasonKV monkey patch for LLaMA.")
     elif method == 'SnapKV':
         llama_models.LlamaForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_llama
@@ -116,13 +118,15 @@ def replace_qwen2(method):
             qwen2_models.Qwen2SdpaAttention.forward = adaptive_qwen2_flash_attn2_forward
         print("use AdativeKV monkey patch for Qwen2.")
     elif method == "ReasonKV":
+        # NOTE: reason_qwen2_flash_attn2_forward is not implemented. Reuse the
+        # AdativeKV batch decode path so ReasonKV supports multi-batch inference.
         qwen2_models.Qwen2ForCausalLM.prepare_inputs_for_generation = ada_prepare_inputs_for_generation_qwen2
         qwen2_models.Qwen2Model.forward = adaptive_qwen2Model_forward
-        qwen2_models.Qwen2Attention.forward = reason_qwen2_flash_attn2_forward
+        qwen2_models.Qwen2Attention.forward = adaptive_qwen2_flash_attn2_forward
         if hasattr(qwen2_models, 'Qwen2FlashAttention2'):
-            qwen2_models.Qwen2FlashAttention2.forward = reason_qwen2_flash_attn2_forward
+            qwen2_models.Qwen2FlashAttention2.forward = adaptive_qwen2_flash_attn2_forward
         if hasattr(qwen2_models, 'Qwen2SdpaAttention'):
-            qwen2_models.Qwen2SdpaAttention.forward = reason_qwen2_flash_attn2_forward
+            qwen2_models.Qwen2SdpaAttention.forward = adaptive_qwen2_flash_attn2_forward
         print("use ReasonKV monkey patch for Qwen2.")
     elif method == 'SnapKV':
         qwen2_models.Qwen2ForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_qwen2

@@ -1,4 +1,5 @@
 import math
+import os
 import time
 from typing import List, Optional, Tuple, Union
 
@@ -18,11 +19,13 @@ from transformers.cache_utils import Cache, DynamicCache, StaticCache
 from transformers.masking_utils import create_causal_mask
 
 from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.utils import logging
 
+logger = logging.get_logger(__name__)
 
 from ..cake_cache import CakeCache, CakeDecodingKVCache_LayerWise
 
-from ..utils import calculate_entropy
+from ..utils import calculate_entropy, global_kv_len, sdpa_decode_with_form
 
 
 
@@ -62,6 +65,11 @@ def llama_attn_forward_cake(
     output_attentions = False
 
     bsz, q_len, _ = hidden_states.size()
+    # transformers>=4.48 no longer sets these attributes on the attention module
+    if not hasattr(self, "num_heads"):
+        self.num_heads = self.config.num_attention_heads
+    if not hasattr(self, "num_key_value_heads"):
+        self.num_key_value_heads = self.config.num_key_value_heads
     time_manager = getattr(self.config, "_time_manager", None)
     if time_manager is not None:
         time_manager.record_qkv_proj_start(self.layer_idx)
@@ -203,17 +211,40 @@ def llama_attn_forward_cake(
 
     if time_manager is not None:
         time_manager.record_pure_attn_start(self.layer_idx)
-    attn_output = _flash_attention_forward(
-        query_states,
-        key_states,
-        value_states,
-        attention_mask,
-        q_len,
-        dropout=dropout_rate,
-        sliding_window=getattr(self, "sliding_window", None),
-        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
-        is_causal=self.is_causal,
-    )
+    # [attn-form ablation] Decode-only switch that changes only the *shape* of the
+    # attention computation (retained tokens and their order stay identical):
+    #   0 (default): original flash attention at each layer's exact length
+    #   1:          native SDPA at each layer's exact length
+    #   2:          native SDPA after right-padding every layer's KV to the global
+    #               max KV length (uniform form; padded slots are masked out)
+    # Padding is compute-only: the KV cache storage is left untouched.
+    _sliding_window = getattr(self, "sliding_window", None)
+    attn_form = "0"
+    if q_len == 1:
+        attn_form = os.environ.get("CAKEKV_ATTN_FORM", "0")
+    if attn_form == "1":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            key_states.shape[1], sliding_window=_sliding_window,
+        )
+    elif attn_form == "2":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            global_kv_len(past_key_value, key_states.shape[1]),
+            sliding_window=_sliding_window,
+        )
+    else:
+        attn_output = _flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            q_len,
+            dropout=dropout_rate,
+            sliding_window=getattr(self, "sliding_window", None),
+            use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
+            is_causal=self.is_causal,
+        )
     if time_manager is not None:
         time_manager.record_pure_attn_end(self.layer_idx)
 

@@ -425,6 +425,27 @@ def duo_attn_static_kv_cache_llama_model_forward(
     else:
         raise ValueError("You have to specify either input_ids or inputs_embeds")
 
+    # [static preallocation] Lazily allocate the static KV cache on the first
+    # (prefill) forward when past_key_values is None, using the sink/recent
+    # sizes and full attention heads recorded by the enable_* helper. This
+    # keeps the algorithm identical while removing the per-step torch.cat
+    # reallocation of the dynamic tuple cache.
+    if past_key_values is None:
+        sink_size = getattr(self, "_duo_static_sink_size", None)
+        recent_size = getattr(self, "_duo_static_recent_size", None)
+        if sink_size is None:
+            sink_size = 64
+        if recent_size is None:
+            recent_size = 256
+        past_key_values = DuoAttentionStaticKVCache(
+            self,
+            getattr(self, "_duo_static_full_attention_heads", None),
+            batch_size,
+            seq_length + 64,
+            sink_size,
+            recent_size,
+        )
+
     seq_length_with_past = seq_length
     past_key_values_length = 0
 

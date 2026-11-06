@@ -47,6 +47,7 @@ def load_model_and_tokenizer(args):
         path,
         trust_remote_code=is_chatglm,
         torch_dtype=torch.bfloat16,
+        device_map="auto",
         attn_implementation="flash_attention_2",
     )
 
@@ -56,7 +57,9 @@ def load_model_and_tokenizer(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
 
-    model = model.to(device).eval()
+    if len(set(getattr(model, "hf_device_map", {}).values())) <= 1:
+        model.to(device)
+    model.eval()
 
     layers = _get_model_layers(model)
     n_layers = len(layers)
@@ -74,7 +77,7 @@ def load_model_and_tokenizer(args):
         attn.config.window_size = window_sizes[i]
         attn.config.kernel_size = kernel_sizes[i]
         attn.config.pooling = method_args.pooling
-        attn.config.base_capacity = base_capacity
+        attn.config.max_capacity_prompt = base_capacity
         attn.config.pyram_beta = method_args.pyram_beta
 
     args._method_args = method_args

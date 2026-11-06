@@ -33,7 +33,14 @@ from .flashinfer_utils import apply_rope_inplace, enable_flashinfer_rmsnorm
 
 from tensor_parallel.pretrained_model import TensorParallelPreTrainedModel
 from flash_attn import flash_attn_func
+from .llama_sdpa import sdpa_attn, sdpa_attn_uniform_decode
 from duo_attn.ulysses import UlyssesAttention
+
+
+def _duo_should_use_sdpa():
+    # DUO_SDPA=1: replace the dedicated attention kernel with native SDPA
+    # (ablation only; algorithm semantics unchanged).
+    return os.environ.get("DUO_SDPA", "0") == "1"
 
 
 def qwen2_duo_attention_forward_two_way(
@@ -181,6 +188,8 @@ def qwen2_duo_attention_forward_one_way_reordered(
         kv_seq_len += past_key_value[0].shape[2]
 
     cos, sin = self.rotary_emb(value_states, position_ids)
+    if cos.device != query_states.device:
+        cos, sin = cos.to(query_states.device), sin.to(query_states.device)
     query_states, key_states = apply_rotary_pos_emb(
         query_states,
         key_states,
@@ -225,44 +234,86 @@ def qwen2_duo_attention_forward_one_way_reordered(
         )
 
     if q_len == kv_seq_len:
-        attn_output = flash_attn_func(
-            query_states,
-            key_states,
-            value_states,
-            causal=True,
-            dropout_p=0.0,
-        )
+        if _duo_should_use_sdpa():
+            # de-kernel: native SDPA (ablation)
+            attn_output = sdpa_attn(
+                query_states, key_states, value_states, self.num_heads, is_causal=True
+            )
+        else:
+            # original: flash_attn_func
+            attn_output = flash_attn_func(
+                query_states,
+                key_states,
+                value_states,
+                causal=True,
+                dropout_p=0.0,
+            )
     else:
-        if self.num_full_attn_head > 0:
-            full_query_states = query_states[:, :, : self.num_full_query_head, :]
-            full_attn_output = flash_attn_func(
-                full_query_states,
+        _attn_form = os.environ.get("DUO_ATTN_FORM", "0") if q_len == 1 else "0"
+        if (
+            _attn_form == "2"
+            and self.num_full_attn_head > 0
+            and self.num_streaming_attn_head > 0
+        ):
+            # uniform-form ablation: pad streaming KV to full length and mask
+            attn_output = sdpa_attn_uniform_decode(
+                query_states,
                 full_key_states,
                 full_value_states,
-                causal=True,
-                dropout_p=0.0,
-            )
-        else:
-            full_attn_output = None
-
-        if self.num_streaming_attn_head > 0:
-            streaming_query_states = query_states[:, :, self.num_full_query_head :, :]
-            streaming_attn_output = flash_attn_func(
-                streaming_query_states,
                 streaming_key_states,
                 streaming_value_states,
-                causal=True,
-                dropout_p=0.0,
+                self.num_full_query_head,
+                self.num_streaming_query_head,
+                self.sink_size,
+                self.recent_size,
             )
         else:
-            streaming_attn_output = None
+            if self.num_full_attn_head > 0:
+                full_query_states = query_states[:, :, : self.num_full_query_head, :]
+                if _duo_should_use_sdpa():
+                    # de-kernel: native SDPA (ablation)
+                    full_attn_output = sdpa_attn(
+                        full_query_states, full_key_states, full_value_states,
+                        self.num_full_query_head, is_causal=True,
+                    )
+                else:
+                    # original: flash_attn_func
+                    full_attn_output = flash_attn_func(
+                        full_query_states,
+                        full_key_states,
+                        full_value_states,
+                        causal=True,
+                        dropout_p=0.0,
+                    )
+            else:
+                full_attn_output = None
 
-        if full_attn_output is None:
-            attn_output = streaming_attn_output
-        elif streaming_attn_output is None:
-            attn_output = full_attn_output
-        else:
-            attn_output = torch.cat([full_attn_output, streaming_attn_output], dim=2)
+            if self.num_streaming_attn_head > 0:
+                streaming_query_states = query_states[:, :, self.num_full_query_head :, :]
+                if _duo_should_use_sdpa():
+                    # de-kernel: native SDPA (ablation)
+                    streaming_attn_output = sdpa_attn(
+                        streaming_query_states, streaming_key_states, streaming_value_states,
+                        self.num_streaming_attn_head, is_causal=True,
+                    )
+                else:
+                    # original: flash_attn_func
+                    streaming_attn_output = flash_attn_func(
+                        streaming_query_states,
+                        streaming_key_states,
+                        streaming_value_states,
+                        causal=True,
+                        dropout_p=0.0,
+                    )
+            else:
+                streaming_attn_output = None
+
+            if full_attn_output is None:
+                attn_output = streaming_attn_output
+            elif streaming_attn_output is None:
+                attn_output = full_attn_output
+            else:
+                attn_output = torch.cat([full_attn_output, streaming_attn_output], dim=2)
 
     attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
     attn_output = self.o_proj(attn_output)
@@ -466,10 +517,12 @@ def enable_qwen2_duo_attention_eval(
 ):
     enable_tuple_kv_cache_for_qwen2(model)
 
-    device = next(model.parameters()).device
-    dtype = next(model.parameters()).dtype
     for idx, layer in enumerate(model.model.layers):
         module = layer.self_attn
+        # Layers can be placed on different GPUs by accelerate's device map.
+        # Keep the reordered weights and the new head mask with their layer.
+        device = module.q_proj.weight.device
+        dtype = module.q_proj.weight.dtype
         layer_full_attention_heads = torch.tensor(
             full_attention_heads[idx], device=device, dtype=dtype
         )

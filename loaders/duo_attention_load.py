@@ -17,6 +17,7 @@ def load_model_and_tokenizer(args):
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from duo_attn.patch import enable_duo_attention_eval, load_full_attention_heads
+    from duo_attn.utils import sparsify_attention_heads
 
     method_args = Namespace(
         sink_size=64, recent_size=256,
@@ -31,9 +32,30 @@ def load_model_and_tokenizer(args):
     if hasattr(method_args, "fixthreshold"):
         method_args.sparsity = method_args.fixthreshold
 
+    model_name = args.model
+    # A head-selection table is architecture-specific.  Check it before
+    # allocating a 32B model so unsupported Qwen3 variants fail clearly rather
+    # than consuming GPU memory with an incompatible Qwen2.5 table.
+    attn_patterns_dir = duo_root / "attn_patterns"
+    mapping = {
+        "llama-3.1-8b": "Meta-Llama-3.1-8B-Instruct",
+        "qwen-2.5-7b": "Qwen2.5-7B-Instruct",
+        "qwen-2.5-7b-1m": "Qwen2.5-7B-Instruct",
+        "glm-4-9b-1m": "glm-4-9b-chat-1m",
+        "ds-qwen-1.5b": "deepseek-r1-distill-qwen-1.5b",
+        "qwen3-32b": "Qwen3-32B",
+    }
+    subdir = mapping.get(model_name)
+    if subdir is None:
+        raise ValueError(f"DuoAttention: no full_attention_heads mapping for model '{model_name}'")
+    head_dir = attn_patterns_dir / subdir
+    candidates = list(head_dir.glob("full_attention_heads*.tsv"))
+    if not candidates:
+        raise FileNotFoundError(f"DuoAttention: no full_attention_heads.tsv under {head_dir}")
+    head_file = candidates[0]
+
     print(f"[DuoAttention] sparsity={getattr(method_args, 'sparsity', 'N/A')}  sink={method_args.sink_size}  recent={method_args.recent_size}")
 
-    model_name = args.model
     path = args.model_path
     device = torch.device(args.device)
 
@@ -64,25 +86,20 @@ def load_model_and_tokenizer(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
 
-    # Resolve the full-attention heads directory and filename for the model
-    attn_patterns_dir = duo_root / "attn_patterns"
-    mapping = {
-        "llama-3.1-8b": "Meta-Llama-3.1-8B-Instruct",
-        "qwen-2.5-7b": "Qwen2.5-7B-Instruct",
-        "qwen-2.5-7b-1m": "Qwen2.5-7B-Instruct",
-        "glm-4-9b-1m": "glm-4-9b-chat-1m",
-        "ds-qwen-1.5b": "deepseek-r1-distill-qwen-1.5b",
-    }
-    subdir = mapping.get(model_name)
-    if subdir is None:
-        raise ValueError(f"DuoAttention: no full_attention_heads mapping for model '{model_name}'")
-    head_dir = attn_patterns_dir / subdir
-    candidates = list(head_dir.glob("full_attention_heads*.tsv"))
-    if not candidates:
-        raise FileNotFoundError(f"DuoAttention: no full_attention_heads.tsv under {head_dir}")
-    head_file = candidates[0]
-
     full_attention_heads = load_full_attention_heads(str(head_dir), head_file.name)
+
+    # DuoAttention's own sparsity semantics: threshold heads at the sparsity
+    # quantile (small values -> streaming, large -> full). Every official eval
+    # entrypoint applies this before enabling the patch, so mirror it here
+    # rather than changing the patch internals.
+    sparsity = getattr(method_args, "sparsity", None)
+    if sparsity is not None:
+        heads_np = full_attention_heads.cpu().numpy()
+        heads_np, true_sparsity = sparsify_attention_heads(
+            heads_np, None, sparsity=sparsity
+        )
+        full_attention_heads = torch.tensor(heads_np, dtype=torch.float32)
+        print(f"[DuoAttention] true sparsity: {true_sparsity}")
 
     enable_duo_attention_eval(
         model,

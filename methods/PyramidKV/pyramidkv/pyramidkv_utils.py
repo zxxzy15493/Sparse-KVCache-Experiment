@@ -20,6 +20,75 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
+def global_kv_len(past_key_value, cur_len):
+    """Return the largest KV length currently held by any layer.
+
+    PyramidKV allocates a different budget per layer, so layers hold different
+    KV lengths.  This returns the maximum (including the current layer) and is
+    only used by the non-uniform vs uniform attention-form ablation.
+    """
+    max_len = cur_len
+    key_cache = getattr(past_key_value, "key_cache", None)
+    if key_cache is None:
+        return max_len
+    for tensor in key_cache:
+        if tensor is not None:
+            max_len = max(max_len, tensor.shape[-2])
+    return max_len
+
+
+def sdpa_decode_with_form(
+    query_states, key_states, value_states, attention_mask, target_len, sliding_window=None
+):
+    """Decode-only SDPA attention used for the non-uniform vs uniform ablation.
+
+    Layout follows FlashAttention: ``[bsz, seq, num_heads, head_dim]``.  Only the
+    *shape* of the computation changes; retained tokens and their order are kept
+    identical, so the result matches the FlashAttention path.
+    ``target_len`` is the KV length every layer is computed against:
+
+    * ``target_len == key_states.shape[1]`` -> exact per-layer length (no padding)
+    * ``target_len == global max length``   -> uniform form: right padding plus a
+      mask that hides the padded slots (wasted FLOPs only, math unchanged)
+
+    Padding is compute-only; the KV cache storage is never modified.
+    """
+    bsz = query_states.shape[0]
+    real_len = key_states.shape[1]
+    device = key_states.device
+
+    if attention_mask is not None and attention_mask.dim() == 2:
+        keep = attention_mask[:, -real_len:].to(torch.bool)
+    else:
+        # Padding-free batches (the efficiency harness) pass no usable 2D mask.
+        keep = torch.ones((bsz, real_len), dtype=torch.bool, device=device)
+
+    if sliding_window is not None and real_len > sliding_window:
+        keep[:, : real_len - sliding_window] = False
+
+    pad = target_len - real_len
+    if pad > 0:
+        num_heads, head_dim = key_states.shape[2], key_states.shape[3]
+        key_states = torch.cat(
+            [key_states, key_states.new_zeros((bsz, pad, num_heads, head_dim))], dim=1
+        )
+        value_states = torch.cat(
+            [value_states, value_states.new_zeros((bsz, pad, num_heads, head_dim))], dim=1
+        )
+        keep = torch.cat(
+            [keep, keep.new_zeros((bsz, pad), dtype=torch.bool)], dim=1
+        )
+
+    attn_mask = keep[:, None, None, :]  # [bsz, 1, 1, target_len]
+    q = query_states.transpose(1, 2)
+    k = key_states.transpose(1, 2)
+    v = value_states.transpose(1, 2)
+    out = F.scaled_dot_product_attention(
+        q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
+    )
+    return out.transpose(1, 2)  # [bsz, q_len, num_heads, head_dim]
+
+
 class PyramidKVCluster():
     """
     PyramidKV: core class for KV cache compression during prefill.
@@ -62,6 +131,7 @@ class PyramidKVCluster():
 
         key_states_orig = key_states
         value_states_orig = value_states
+        padding_mask = attention_mask
         if num_kv_heads != num_heads:
             key_states = repeat_kv(key_states, num_key_value_groups)
             value_states = repeat_kv(value_states, num_key_value_groups)
@@ -109,11 +179,18 @@ class PyramidKVCluster():
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
             mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
             mask = mask.to(attn_weights.device)
-            attention_mask = mask[None, None, :, :]
+            causal_mask = mask[None, None, :, :]
 
-            attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+            attn_weights[:, :, -self.window_size:, -self.window_size:] += causal_mask
+            if padding_mask is not None and padding_mask.dim() == 2:
+                valid_tokens = padding_mask[:, -q_len:].to(torch.bool)
+                attn_weights.masked_fill_(~valid_tokens[:, None, None, :], torch.finfo(attn_weights.dtype).min)
 
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = torch.nan_to_num(attn_weights)
+            if padding_mask is not None and padding_mask.dim() == 2:
+                query_mask = padding_mask[:, -self.window_size:].to(device=attn_weights.device, dtype=attn_weights.dtype)
+                attn_weights *= query_mask[:, None, :, None]
             
             attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
             
@@ -157,11 +234,18 @@ class PyramidKVCluster():
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
             mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
             mask = mask.to(attn_weights.device)
-            attention_mask = mask[None, None, :, :]
+            causal_mask = mask[None, None, :, :]
 
-            attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+            attn_weights[:, :, -self.window_size:, -self.window_size:] += causal_mask
+            if padding_mask is not None and padding_mask.dim() == 2:
+                valid_tokens = padding_mask[:, -q_len:].to(torch.bool)
+                attn_weights.masked_fill_(~valid_tokens[:, None, None, :], torch.finfo(attn_weights.dtype).min)
 
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = torch.nan_to_num(attn_weights)
+            if padding_mask is not None and padding_mask.dim() == 2:
+                query_mask = padding_mask[:, -self.window_size:].to(device=attn_weights.device, dtype=attn_weights.dtype)
+                attn_weights *= query_mask[:, None, :, None]
             attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
             if self.pooling == 'avgpool':
                 attn_cache = F.avg_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
@@ -213,4 +297,3 @@ def init_pyramidkv(self, num_hidden_layers):
         pooling = self.config.pooling,
         beta = self.config.pyram_beta,
         )
-

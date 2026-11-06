@@ -115,7 +115,9 @@ def load_model_and_tokenizer(args):
         use_cascading=False,
     )] * n_layers
 
-    model = model.to(device).eval()
+    if len(set(getattr(model, "hf_device_map", {}).values())) <= 1:
+        model.to(device)
+    model.eval()
 
     args._method_args = method_args
     args._cleanup = None

@@ -57,7 +57,9 @@ def load_model_and_tokenizer(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
 
-    model = model.to(device).eval()
+    if len(set(getattr(model, "hf_device_map", {}).values())) <= 1:
+        model.to(device)
+    model.eval()
 
     layers = _get_model_layers(model)
     n_layers = len(layers)

@@ -9,9 +9,14 @@ def replace_llama(method):
 
     if method == "pyramidkv":
         print("Using PyramidKV!")
-        transformers.models.llama.modeling_llama.LlamaAttention.forward = llama_attn_forward_PyramidKV
-        if hasattr(transformers.models.llama.modeling_llama, "LlamaFlashAttention2"):
-            transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = llama_flash_attn2_forward_PyramidKV
+        llama_modeling = transformers.models.llama.modeling_llama
+        if hasattr(llama_modeling, "LlamaFlashAttention2"):
+            llama_modeling.LlamaAttention.forward = llama_attn_forward_PyramidKV
+            llama_modeling.LlamaFlashAttention2.forward = llama_flash_attn2_forward_PyramidKV
+        else:
+            # transformers >= 4.57 merged LlamaFlashAttention2 into LlamaAttention;
+            # use the flash-attention forward to avoid eager q_len x q_len materialization.
+            llama_modeling.LlamaAttention.forward = llama_flash_attn2_forward_PyramidKV
 
     if method not in ["fullkv"]:
         transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation = prepare_inputs_for_generation_llama_new

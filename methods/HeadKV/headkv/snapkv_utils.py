@@ -100,9 +100,14 @@ class DynamicCacheSplitHeadFlatten(Cache):
 
             assert self.key_cache[layer_idx].dim() == 2
             bs, head, seqlen, dim = key_states.shape
-            assert bs == 1 and seqlen == 1
+            # The flattened cache is ordered as [batch, head].  The CUDA
+            # updater therefore already supports multiple sequences; only
+            # multi-token decode remains unsupported by this cache format.
+            assert seqlen == 1
             head_lens = cache_kwargs["head_lens"]
             cu_klen = cache_kwargs["cu_klen"]
+            if head_lens.numel() != bs * head:
+                raise ValueError("flattened-cache metadata does not match batch and head dimensions")
 
             try:
                 import nvtx
@@ -110,13 +115,29 @@ class DynamicCacheSplitHeadFlatten(Cache):
             except Exception:
                 copy_old_rng = None
 
-            try:
-                from tiny_api_cuda import update_flatten_view
-                new_key_cache = update_flatten_view(self.key_cache[layer_idx].view(-1, dim), key_states.view(-1, dim), head_lens, cu_klen)
-                new_value_cache = update_flatten_view(self.value_cache[layer_idx].view(-1, dim), value_states.view(-1, dim), head_lens, cu_klen)
-            except ModuleNotFoundError:
+            # [memory-kernel ablation] HEADKV_PURE_TORCH_CACHE=1 forces the
+            # pure-PyTorch fallback instead of the CUDA extension (tiny_api_cuda),
+            # removing the memory/copy kernel while keeping the same per-head
+            # append semantics. Otherwise keep the original CUDA path.
+            if os.environ.get("HEADKV_PURE_TORCH_CACHE", "0") == "1":
                 new_key_cache = _update_flatten_view_fallback(self.key_cache[layer_idx].view(-1, dim), key_states.view(-1, dim), head_lens)
                 new_value_cache = _update_flatten_view_fallback(self.value_cache[layer_idx].view(-1, dim), value_states.view(-1, dim), head_lens)
+            else:
+                try:
+                    from tiny_api_cuda import update_flatten_view
+                    # The extension launches on the current CUDA device rather
+                    # than inferring it from tensors. Keep the original direct
+                    # call on the common single-GPU path.
+                    if torch.cuda.current_device() == key_states.device.index:
+                        new_key_cache = update_flatten_view(self.key_cache[layer_idx].view(-1, dim), key_states.view(-1, dim), head_lens, cu_klen)
+                        new_value_cache = update_flatten_view(self.value_cache[layer_idx].view(-1, dim), value_states.view(-1, dim), head_lens, cu_klen)
+                    else:
+                        with torch.cuda.device(key_states.device):
+                            new_key_cache = update_flatten_view(self.key_cache[layer_idx].view(-1, dim), key_states.view(-1, dim), head_lens, cu_klen)
+                            new_value_cache = update_flatten_view(self.value_cache[layer_idx].view(-1, dim), value_states.view(-1, dim), head_lens, cu_klen)
+                except ModuleNotFoundError:
+                    new_key_cache = _update_flatten_view_fallback(self.key_cache[layer_idx].view(-1, dim), key_states.view(-1, dim), head_lens)
+                    new_value_cache = _update_flatten_view_fallback(self.value_cache[layer_idx].view(-1, dim), value_states.view(-1, dim), head_lens)
 
             if copy_old_rng is not None:
                 nvtx.end_range(copy_old_rng)
@@ -336,6 +357,7 @@ class AdaptiveSnapKVCluster():
         assert key_states.shape[-2] == query_states.shape[-2]
         _device = key_states.device
         bsz, num_heads, q_len, head_dim = query_states.shape
+        flat_heads = bsz * num_heads
 
         def init_metadata(num_heads, k_lens, klen_sum, max_seqlen_k):
             # init metadata
@@ -359,7 +381,7 @@ class AdaptiveSnapKVCluster():
             self.cu_head_offset = torch.arange(1, num_heads+1, dtype=torch.int32, device=_device)
 
         if q_len <= self.window_size:
-            init_metadata(num_heads, [q_len] * num_heads, q_len * num_heads, q_len)
+            init_metadata(flat_heads, [q_len] * flat_heads, q_len * flat_heads, q_len)
             # all tokens kept — selected indices = all positions
             self._selected_indices = [torch.arange(q_len, dtype=torch.long) for _ in range(num_heads)]
             return key_states.reshape(-1, head_dim), value_states.reshape(-1, head_dim)
@@ -367,7 +389,7 @@ class AdaptiveSnapKVCluster():
         attn_score = self.calcul_attn_sore(key_states,query_states)
 
         if self.base_capacity > attn_score.size(-1):
-            init_metadata(num_heads, [q_len] * num_heads, q_len * num_heads, q_len)
+            init_metadata(flat_heads, [q_len] * flat_heads, q_len * flat_heads, q_len)
             # not compress — selected indices = all positions
             self._selected_indices = [torch.arange(q_len, dtype=torch.long) for _ in range(num_heads)]
             return key_states.reshape(-1, head_dim), value_states.reshape(-1, head_dim)
@@ -403,7 +425,7 @@ class AdaptiveSnapKVCluster():
             cap_preview = cap[:8].tolist() if cap.numel() else []
                
          
-        keep_k_per_head = head_adaptive_capacity[0].to(dtype=torch.int32, device=_device)
+        keep_k_per_head = head_adaptive_capacity.to(dtype=torch.int32, device=_device)
         available_k = sorted_attn_score_indices.shape[-1]
         keep_k_per_head = keep_k_per_head.clamp(min=0, max=available_k)
         max_keep = int(keep_k_per_head.max().item())
@@ -423,10 +445,8 @@ class AdaptiveSnapKVCluster():
             top_k_all = key_states[:, :, :0, :]
             top_v_all = value_states[:, :, :0, :]
 
-        assert bsz == 1
-
         # reinit varlen metadata
-        k_lens_tensor = keep_k_per_head + self.window_size
+        k_lens_tensor = (keep_k_per_head + self.window_size).reshape(-1)
         klen_sum = int(k_lens_tensor.sum().item())
         max_seqlen_k = int(k_lens_tensor.max().item())
         k_lens = k_lens_tensor
@@ -436,21 +456,21 @@ class AdaptiveSnapKVCluster():
         selected_v_all = torch.cat([top_v_all, tail_v_all], dim=2)
 
         total_slots = max_keep + self.window_size
-        slot_ids = torch.arange(total_slots, device=_device).unsqueeze(0)
-        keep_prefix_mask = slot_ids < keep_k_per_head.unsqueeze(1)
+        slot_ids = torch.arange(total_slots, device=_device).view(1, 1, -1)
+        keep_prefix_mask = slot_ids < keep_k_per_head.unsqueeze(-1)
         keep_tail_mask = slot_ids >= max_keep
         keep_mask = keep_prefix_mask | keep_tail_mask
 
-        heads_key_states = selected_k_all[0][keep_mask]
-        heads_value_states = selected_v_all[0][keep_mask]
+        heads_key_states = selected_k_all[keep_mask]
+        heads_value_states = selected_v_all[keep_mask]
 
-        init_metadata(num_heads, k_lens, klen_sum, max_seqlen_k)
+        init_metadata(flat_heads, k_lens, klen_sum, max_seqlen_k)
 
         # store actual selected positions for recall tracking
         window_start = q_len - self.window_size
         self._selected_indices = []
         for h in range(num_heads):
-            keep_k = int(keep_k_per_head[h].item())
+            keep_k = int(keep_k_per_head[0, h].item())
             if keep_k > 0:
                 h_topk = sorted_attn_score_indices[0, h, :keep_k].cpu()
             else:
@@ -503,6 +523,8 @@ class ReasonSnapKVCluster():
         elif head_choice == 'reason':
             if 'deepseek' in model.lower():
                 path = f'{root_path}/Important_Head/head_score/DeepSeek-R1-Distill-Qwen-1.5B_retrieval_reasoning_heads.json'
+            elif 'qwen3-32b' in model.lower():
+                path = f'{root_path}/Important_Head/head_score/Qwen3-32B_retrieval_reasoning_heads.json'
             elif 'llama' in model.lower():
                 path = f'{root_path}/Important_Head/head_score/Meta-Llama-3-8B-Instruct_retrieval_reasoning_heads.json'
             elif 'mistral' in model.lower():
@@ -521,6 +543,28 @@ class ReasonSnapKVCluster():
         head_score_list = torch.tensor(head_score_list / sum(head_score_list))
         head_score_list = torch.pow(head_score_list, self.temp)
         head_score_list = head_score_list / torch.sum(head_score_list)
+        expected_scores = self.num_hidden_layers * self.num_attention_heads
+        if head_score_list.numel() != expected_scores:
+            # Qwen3 has 36 layers × 32 heads, while the available Qwen2.5
+            # profile is 28 × 28.  Preserve its coarse layer/head prior by
+            # resampling it to Qwen3's topology rather than indexing it with
+            # an incompatible shape.
+            factors = [
+                (rows, head_score_list.numel() // rows)
+                for rows in range(1, int(math.sqrt(head_score_list.numel())) + 1)
+                if head_score_list.numel() % rows == 0
+            ]
+            source_layers, source_heads = min(
+                factors,
+                key=lambda shape: abs(shape[0] - self.num_hidden_layers) + abs(shape[1] - self.num_attention_heads),
+            )
+            head_score_list = F.interpolate(
+                head_score_list.reshape(1, 1, source_layers, source_heads),
+                size=(self.num_hidden_layers, self.num_attention_heads),
+                mode="bilinear",
+                align_corners=False,
+            ).reshape(-1)
+            head_score_list = head_score_list / head_score_list.sum()
         self.total_attention = head_score_list.reshape(self.num_hidden_layers, self.num_attention_heads)
 
         total_pool_capacity = (self.base_capacity // self.beta) * self.num_hidden_layers * self.num_attention_heads
@@ -577,6 +621,7 @@ class ReasonSnapKVCluster():
         # check if prefix phase        assert key_states.shape[-2] == query_states.shape[-2]
         _device = key_states.device
         bsz, num_heads, q_len, head_dim = query_states.shape
+        flat_heads = bsz * num_heads
 
         def init_metadata(num_heads, k_lens, klen_sum, max_seqlen_k):
             # init metadata
@@ -600,14 +645,14 @@ class ReasonSnapKVCluster():
             self.cu_head_offset = torch.arange(1, num_heads+1, dtype=torch.int32, device=_device)
 
         if q_len <= self.window_size:
-            init_metadata(num_heads, [q_len] * num_heads, q_len * num_heads, q_len)
+            init_metadata(flat_heads, [q_len] * flat_heads, q_len * flat_heads, q_len)
             self._selected_indices = [torch.arange(q_len, dtype=torch.long) for _ in range(num_heads)]
             return key_states.reshape(-1, head_dim), value_states.reshape(-1, head_dim)
 
         attn_score = self.calcul_attn_sore(key_states,query_states)
 
         if self.base_capacity > attn_score.size(-1):
-            init_metadata(num_heads, [q_len] * num_heads, q_len * num_heads, q_len)
+            init_metadata(flat_heads, [q_len] * flat_heads, q_len * flat_heads, q_len)
             # not compress
             self._selected_indices = [torch.arange(q_len, dtype=torch.long) for _ in range(num_heads)]
             return key_states.reshape(-1, head_dim), value_states.reshape(-1, head_dim)
@@ -637,10 +682,8 @@ class ReasonSnapKVCluster():
             top_k_all = key_states[:, :, :0, :]
             top_v_all = value_states[:, :, :0, :]
 
-        assert bsz == 1
-
         # reinit varlen metadata
-        k_lens_tensor = keep_k_per_head + self.window_size
+        k_lens_tensor = (keep_k_per_head + self.window_size).unsqueeze(0).expand(bsz, -1).reshape(-1)
         klen_sum = int(k_lens_tensor.sum().item())
         max_seqlen_k = int(k_lens_tensor.max().item())
         k_lens = k_lens_tensor
@@ -650,15 +693,15 @@ class ReasonSnapKVCluster():
         selected_v_all = torch.cat([top_v_all, tail_v_all], dim=2)
 
         total_slots = max_keep + self.window_size
-        slot_ids = torch.arange(total_slots, device=_device).unsqueeze(0)
-        keep_prefix_mask = slot_ids < keep_k_per_head.unsqueeze(1)
+        slot_ids = torch.arange(total_slots, device=_device).view(1, 1, -1)
+        keep_prefix_mask = slot_ids < keep_k_per_head.view(1, num_heads, 1)
         keep_tail_mask = slot_ids >= max_keep
         keep_mask = keep_prefix_mask | keep_tail_mask
 
-        heads_key_states = selected_k_all[0][keep_mask]
-        heads_value_states = selected_v_all[0][keep_mask]
+        heads_key_states = selected_k_all[keep_mask.expand(bsz, -1, -1)]
+        heads_value_states = selected_v_all[keep_mask.expand(bsz, -1, -1)]
 
-        init_metadata(num_heads, k_lens, klen_sum, max_seqlen_k)
+        init_metadata(flat_heads, k_lens, klen_sum, max_seqlen_k)
 
         # store actual selected positions for recall tracking
         window_start = q_len - self.window_size

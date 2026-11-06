@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,11 +14,12 @@ from transformers.models.qwen2.modeling_qwen2 import (
 )
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
+from flash_attn import flash_attn_func
 from transformers.utils import (
     logging,
 )
 
-from .pyramidkv_utils import init_pyramidkv
+from .pyramidkv_utils import init_pyramidkv, global_kv_len, sdpa_decode_with_form
 
 logger = logging.get_logger(__name__)
 
@@ -163,7 +165,6 @@ def fixed_qwen2Model_forward(
                 position_embeddings,
             )
         else:
-            before = torch.cuda.memory_allocated()
             layer_output = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
@@ -173,12 +174,8 @@ def fixed_qwen2Model_forward(
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
             )
-            after = torch.cuda.memory_allocated()
-            # print(f"[MEM] layer {i}: {before/1e9:.2f}GiB -> {after/1e9:.2f}GiB delta={(after-before)/1e9:.2f}GiB peak={torch.cuda.max_memory_allocated()/1e9:.2f}GiB")
 
         hidden_states = layer_output
-
-        torch.cuda.empty_cache()
 
     hidden_states = self.norm(hidden_states)
 
@@ -240,13 +237,11 @@ def qwen2_flash_attn2_forward_PyramidKV(
         self._cake_timing = timing
 
     bsz, q_len, _ = hidden_states.size()
-    mem_before = torch.cuda.memory_allocated()
     is_prefill = past_key_value is None or q_len > 1
 
     query_states = self.q_proj(hidden_states)
     key_states = self.k_proj(hidden_states)
     value_states = self.v_proj(hidden_states)
-    mem_qkv = torch.cuda.memory_allocated()
 
     query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -277,7 +272,6 @@ def qwen2_flash_attn2_forward_PyramidKV(
         position_embeddings = self.rotary_emb(value_states, position_ids)
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-    mem_rope = torch.cuda.memory_allocated()
 
     # KV cache stores unrepeated (4-head) tensors to save 8x memory
     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
@@ -290,28 +284,18 @@ def qwen2_flash_attn2_forward_PyramidKV(
             attention_mask,
             self.num_key_value_groups,
         )
-        mem_compress = torch.cuda.memory_allocated()
         past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
-        mem_cache_update = torch.cuda.memory_allocated()
     elif past_key_value is not None:
         self.kv_seq_len += q_len
         key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-        mem_compress = torch.cuda.memory_allocated()
-        mem_cache_update = torch.cuda.memory_allocated()
-    else:
-        mem_compress = torch.cuda.memory_allocated()
-        mem_cache_update = torch.cuda.memory_allocated()
 
     # Only repeat K/V heads right before flash attention, not before caching
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
-    mem_repeat = torch.cuda.memory_allocated()
 
     query_states = query_states.transpose(1, 2)
     key_states = key_states.transpose(1, 2)
     value_states = value_states.transpose(1, 2)
-
-    mem_before_attn = torch.cuda.memory_allocated()
 
     dropout_rate = self.attention_dropout if self.training else 0.0
 
@@ -332,23 +316,42 @@ def qwen2_flash_attn2_forward_PyramidKV(
         key_states = key_states.to(target_dtype)
         value_states = value_states.to(target_dtype)
 
-    attn_output = _flash_attention_forward(
-        query_states,
-        key_states,
-        value_states,
-        attention_mask,
-        q_len,
-        is_causal=getattr(self, "is_causal", True),
-        dropout=dropout_rate,
-        position_ids=None,
-        sliding_window=getattr(self, "sliding_window", None),
-        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
-    )
-    mem_after_attn = torch.cuda.memory_allocated()
-
-    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+    # [attn-form ablation] Decode-only switch that changes only the *shape* of the
+    # attention computation (retained tokens and their order stay identical):
+    #   0 (default): original flash attention at each layer's exact length
+    #   1:          native SDPA at each layer's exact length
+    #   2:          native SDPA after right-padding every layer's KV to the global
+    #               max KV length (uniform form; padded slots are masked out)
+    # Padding is compute-only: the KV cache storage is left untouched.
+    _sliding_window = getattr(self, "sliding_window", None)
+    attn_form = "0"
+    if (not is_prefill) and q_len == 1:
+        attn_form = os.environ.get("PYRAMIDKV_ATTN_FORM", "0")
+    if attn_form == "1":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            key_states.shape[1], sliding_window=_sliding_window,
+        )
+    elif attn_form == "2":
+        attn_output = sdpa_decode_with_form(
+            query_states, key_states, value_states, attention_mask,
+            global_kv_len(past_key_value, key_states.shape[1]),
+            sliding_window=_sliding_window,
+        )
+    else:
+        if _sliding_window is not None:
+            attn_output = flash_attn_func(
+                query_states, key_states, value_states,
+                dropout_p=dropout_rate, causal=True,
+                window_size=(_sliding_window, 0),
+            )
+        else:
+            attn_output = flash_attn_func(
+                query_states, key_states, value_states,
+                dropout_p=dropout_rate, causal=True,
+            )
+    attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features).contiguous()
     attn_output = self.o_proj(attn_output)
-    mem_after_o = torch.cuda.memory_allocated()
 
     # if not is_prefill and q_len == 1:
     #     print(f"[ATTN-DETAIL][layer={self.layer_idx}] "
@@ -388,7 +391,7 @@ def prepare_inputs_for_generation_qwen2(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
 ):
     num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
-    if past_key_values is not None and past_key_values.get_seq_length() == 0:
+    if past_key_values is None:
         for layer in self.model.layers:
             layer.self_attn.kv_seq_len = 0
     if past_key_values is not None:

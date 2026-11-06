@@ -115,7 +115,7 @@ def load_model_and_tokenizer(model_path, device, compress_config, debug_timing=F
 			window_size=compress_config.window_size,
 			k_seq_dim=2,
 			v_seq_dim=2,
-			num_heads=attn.num_heads,
+			num_heads=getattr(attn, "num_heads", config.num_attention_heads),
 			num_layers=layers,
 			use_cascading=compress_config.cascading
 		)]*layers

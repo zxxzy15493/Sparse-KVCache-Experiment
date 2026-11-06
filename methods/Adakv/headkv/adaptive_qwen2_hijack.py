@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Tuple, Union
 import warnings
+import os
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.models.qwen2.modeling_qwen2 import (
     apply_rotary_pos_emb,
@@ -20,6 +21,7 @@ from transformers.modeling_attn_mask_utils import (
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from headkv.snapkv_utils import init_headkv, init_reason_snapkv, DynamicCacheSplitHeadFlatten
+from headkv.snapkv_utils_sdpa import sdpa_decode_attention
 
 logger = logging.get_logger(__name__)
 
@@ -320,7 +322,7 @@ def adaptive_qwen2_flash_attn2_forward(
                     dropout_p=dropout_rate,
                     causal=True,
                 )
-            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+            attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features).contiguous()
 
         else:
             self.kv_seq_len = getattr(self, "kv_seq_len", 0) + q_len
@@ -343,17 +345,29 @@ def adaptive_qwen2_flash_attn2_forward(
             max_seqlen_q = 1
             max_seqlen_k = self.kv_cluster.max_seqlen_k
 
-            attn_output = flash_attn_varlen_func(
-                query_states,
-                key_states,
-                value_states,
-                cu_seqlens_q,
-                cu_seqlens_k,
-                max_seqlen_q,
-                max_seqlen_k,
-                causal=True,
-            ).reshape(bsz, self.num_heads, q_len, self.head_dim)
-            attn_output = attn_output.transpose(0, 1).reshape(bsz, q_len, self.hidden_size)
+            # [attn-kernel ablation switch] default (no switch) = original varlen kernel
+            # (flash_attn_varlen_func). ADAKV_SDPA_ATTN=1 switches to the de-kernelized
+            # native SDPA on dense padded per-head KV, keeping the same per-head
+            # retained-token semantics. Both branches are equivalent.
+            if os.environ.get("ADAKV_SDPA_ATTN", "0") == "1":
+                attn_output = sdpa_decode_attention(
+                    query_states, key_states, value_states,
+                    self.kv_cluster.head_lens, self.kv_cluster.cu_klen,
+                    bsz, self.num_heads, q_len, self.head_dim,
+                )
+                attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features)
+            else:
+                attn_output = flash_attn_varlen_func(
+                    query_states,
+                    key_states,
+                    value_states,
+                    cu_seqlens_q,
+                    cu_seqlens_k,
+                    max_seqlen_q,
+                    max_seqlen_k,
+                    causal=True,
+                ).reshape(bsz, self.num_heads, q_len, self.head_dim)
+                attn_output = attn_output.transpose(0, 1).reshape(bsz, q_len, self.o_proj.in_features)
 
     attn_output = self.o_proj(attn_output)
 

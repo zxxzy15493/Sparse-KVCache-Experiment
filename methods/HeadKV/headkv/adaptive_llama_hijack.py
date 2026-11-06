@@ -27,6 +27,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.masking_utils import create_causal_mask
 
 from headkv.snapkv_utils import init_headkv,init_reason_snapkv,  DynamicCacheSplitHeadFlatten
+from headkv.snapkv_utils_sdpa import sdpa_decode_attention
 
 logger = logging.get_logger(__name__)
 
@@ -51,7 +52,7 @@ def _safe_decode_from_flatten_cache(
 
     outputs = []
     scale = math.sqrt(head_dim)
-    for head_idx in range(num_heads):
+    for head_idx in range(bsz * num_heads):
         start = int(cu_seqlens_k[head_idx].item())
         end = int(cu_seqlens_k[head_idx + 1].item())
         k_head = key_flat[start:end]
@@ -99,6 +100,7 @@ def adaptive_LlamaModel_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,  # compat 4.45: new params
+    **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
     import time
 
@@ -477,18 +479,24 @@ def adaptive_llama_flash_attn2_forward(
             if tm is not None:
                 tm.record_dec_pure_start(self.layer_idx)
             if use_fast_decode:
+                # [attn-kernel ablation switch] default (no switch) = original varlen kernel
+                # (flash_attn_varlen_func). HEADKV_SDPA_ATTN=1 switches to the de-kernelized
+                # native SDPA on dense padded per-head KV, keeping the same per-head
+                # retained-token semantics. Both branches are equivalent.
+                _use_sdpa = os.environ.get("HEADKV_SDPA_ATTN", "0") == "1"
                 try:
-                    attn_output = flash_attn_varlen_func(
-                        query_states,
-                        key_states,
-                        value_states,
-                        self.kv_cluster.cu_qlen,
-                        cu_seqlens_k,
-                        max_seqlen_q,
-                        max_seqlen_k,
-                        causal=True,
-                    ).reshape(bsz, self.num_heads, q_len, self.head_dim)
-                    attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
+                    if _use_sdpa:
+                        attn_output = sdpa_decode_attention(
+                            query_states, key_states, value_states,
+                            self.kv_cluster.head_lens, self.kv_cluster.cu_klen,
+                            bsz, self.num_heads, q_len, self.head_dim,
+                        )
+                    else:
+                        attn_output = flash_attn_varlen_func(
+                            query_states, key_states, value_states,
+                            self.kv_cluster.cu_qlen, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal=True,
+                        ).reshape(bsz, self.num_heads, q_len, self.head_dim)
+                        attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
                 except RuntimeError:
                     self._disable_varlen_decode = True
                     attn_output = _safe_decode_from_flatten_cache(
@@ -722,18 +730,24 @@ def reason_llama_flash_attn2_forward(
             if tm is not None:
                 tm.record_dec_pure_start(self.layer_idx)
             if use_fast_decode:
+                # [attn-kernel ablation switch] default (no switch) = original varlen kernel
+                # (flash_attn_varlen_func). HEADKV_SDPA_ATTN=1 switches to the de-kernelized
+                # native SDPA on dense padded per-head KV, keeping the same per-head
+                # retained-token semantics. Both branches are equivalent.
+                _use_sdpa = os.environ.get("HEADKV_SDPA_ATTN", "0") == "1"
                 try:
-                    attn_output = flash_attn_varlen_func(
-                        query_states,
-                        key_states,
-                        value_states,
-                        self.kv_cluster.cu_qlen,
-                        cu_seqlens_k,
-                        max_seqlen_q,
-                        max_seqlen_k,
-                        causal=True,
-                    ).reshape(bsz, self.num_heads, q_len, self.head_dim)
-                    attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
+                    if _use_sdpa:
+                        attn_output = sdpa_decode_attention(
+                            query_states, key_states, value_states,
+                            self.kv_cluster.head_lens, self.kv_cluster.cu_klen,
+                            bsz, self.num_heads, q_len, self.head_dim,
+                        )
+                    else:
+                        attn_output = flash_attn_varlen_func(
+                            query_states, key_states, value_states,
+                            self.kv_cluster.cu_qlen, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal=True,
+                        ).reshape(bsz, self.num_heads, q_len, self.head_dim)
+                        attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
                 except RuntimeError:
                     self._disable_varlen_decode = True
                     attn_output = _safe_decode_from_flatten_cache(
