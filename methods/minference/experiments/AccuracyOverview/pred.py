@@ -87,13 +87,42 @@ def load_dataset(args):
     out_path = os.path.join(args.save_dir, f"{task}.jsonl")
 
     if benchmark == "LongBench":
-        from datasets import load_dataset as hf_load_dataset
+        from datasets import DownloadConfig, load_dataset as hf_load_dataset
 
-        data = [dict(sample) for sample in hf_load_dataset("THUDM/LongBench", task, split="test")]
+        # The LongBench script downloads a single large archive.  Default
+        # datasets retries only once, which is too brittle for a transient HF
+        # mirror/network timeout.  Prepared datasets still load from the cache
+        # without a network request.
+        download_retries = int(os.environ.get("LONG_BENCH_DOWNLOAD_RETRIES", "5"))
+        if download_retries < 1:
+            raise ValueError("LONG_BENCH_DOWNLOAD_RETRIES must be at least 1")
+        download_config = DownloadConfig(max_retries=download_retries)
+
+        # LongBench is distributed with a dataset loading script.  Accuracy.sh
+        # runs non-interactively, so explicitly approve that script here rather
+        # than letting datasets prompt and then fail with its default answer.
+        data = [
+            dict(sample)
+            for sample in hf_load_dataset(
+                "THUDM/LongBench",
+                task,
+                split="test",
+                trust_remote_code=True,
+                download_config=download_config,
+            )
+        ]
         max_new_tokens = dataset2maxlen.get(task, 128)
 
         # Apply chat template for non-generation tasks
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        # Qwen3 enables thinking by default.  LongBench evaluates the final
+        # answer and does not need hidden chain-of-thought tokens, so use the
+        # model's hard template switch to prevent a <think> block entirely.
+        # Keep all other model families on their existing chat template path.
+        is_qwen3 = "qwen3" in model_name.lower() or "qwen3" in str(
+            getattr(tokenizer, "name_or_path", "")
+        ).lower()
+        chat_template_kwargs = {"enable_thinking": False} if is_qwen3 else {}
         prompt_format = dataset2prompt.get(task, "{input}")
         for i in range(len(data)):
             json_obj = data[i]
@@ -104,6 +133,7 @@ def load_dataset(args):
                     message,
                     tokenize=False,
                     add_generation_prompt=True,
+                    **chat_template_kwargs,
                 )
             data[i]["input"] = prompt
 
@@ -121,8 +151,33 @@ def load_dataset(args):
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
-    # Apply num_samples limit
-    if args.num_samples > 0:
+    # A pattern search is meaningful only for a long prefill.  Select one
+    # longest available sample instead of relying on the dataset's first row;
+    # regular evaluation retains its normal --num_samples behavior.
+    is_search = os.environ.get("is_search", "false").lower() == "true"
+    if is_search:
+        if not data:
+            raise ValueError(f"No samples available for {task} pattern search")
+        max_search_length = int(os.environ.get("MINFERENCE_SEARCH_MAX_LENGTH", "0"))
+        if max_search_length < 0:
+            raise ValueError("MINFERENCE_SEARCH_MAX_LENGTH must be non-negative")
+        candidates = data
+        if max_search_length:
+            candidates = [
+                sample for sample in data
+                if sample.get("length", 0) <= max_search_length
+            ]
+            if not candidates:
+                raise ValueError(
+                    f"No {task} sample has length <= {max_search_length} for pattern search"
+                )
+        data = [max(candidates, key=lambda sample: sample.get("length", 0))]
+        limit_note = f", limit={max_search_length}" if max_search_length else ""
+        print(
+            f"[{task}] Search mode selected longest eligible sample "
+            f"(length={data[0].get('length', 'unknown')}{limit_note})"
+        )
+    elif args.num_samples > 0:
         data = data[:args.num_samples]
 
     # Resume support: skip already predicted indices

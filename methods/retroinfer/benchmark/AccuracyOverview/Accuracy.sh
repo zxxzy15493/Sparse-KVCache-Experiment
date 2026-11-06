@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 MODEL_NAME=${1}
 ATTN_TYPE=${2:-"Full_Flash_Attn"}
 BENCHMARK=${3}
@@ -18,6 +20,7 @@ if [ "$BENCHMARK" = "LongBench" ]; then
 elif [ "$BENCHMARK" = "Synthetic" ]; then
     case "$MODEL_NAME" in
         llama*) MODEL_SHORT="llama-3.1-8b" ;;
+        qwen3-32b|qwen3*) MODEL_SHORT="qwen3-32b" ;;
         qwen*)  MODEL_SHORT="qwen-2.5-7b-1m" ;;
         glm*)      MODEL_SHORT="glm-4-9b" ;;
         *)         MODEL_SHORT="$MODEL_NAME" ;;
@@ -29,11 +32,11 @@ else
 fi
 
 if [ "$BENCHMARK" = "Synthetic" ]; then
-    RESULT_DIR="./results/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/${MAX_LEN}"
-    LOG_DIR="./log/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/${MAX_LEN}"
+    RESULT_DIR="./results/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/${MAX_LEN}/budget-${BUDGET}"
+    LOG_DIR="./log/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/${MAX_LEN}/budget-${BUDGET}"
 else
-    RESULT_DIR="./results/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}"
-    LOG_DIR="./log/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}"
+    RESULT_DIR="./results/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/budget-${BUDGET}"
+    LOG_DIR="./log/pred/${MODEL_NAME}/${ATTN_TYPE}/${BENCHMARK}/budget-${BUDGET}"
 fi
 
 mkdir -p ${RESULT_DIR}
@@ -43,6 +46,12 @@ echo "Parameters: model=${MODEL_NAME} attn_type=${ATTN_TYPE} benchmark=${BENCHMA
 echo "Budget: budget=${BUDGET} estimate_ratio=${ESTIMATE_RATIO} budget_ratio=${BUDGET_RATIO} ratio_or_fixed=${RATIO_OR_FIXED}"
 echo "DATA_DIR: ${DATA_DIR}"
 echo "Start to predict..."
+
+# LongBench is fetched from the Hub and can involve a large dataset README or
+# dataset script.  Keep the caller's explicit values, but avoid the Hub's
+# short default metadata timeout on slower mirrors.
+export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-60}"
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-60}"
 
 python -u pred.py \
     --model_name ${MODEL_NAME} \

@@ -5,8 +5,8 @@ import torch.nn.functional as F
 import gc
 from .utils import apply_rotary_pos_emb, layer_norm
 import flashinfer
-import time
 from .attnserver import LSHSparseAttnServer
+from .generation import generate_batch
 
 class LLMLayer:
     def __init__(self, layer_idx, config: LlamaConfig) -> None:
@@ -78,6 +78,8 @@ class LLMLayer:
         self.down_proj =  self.down_proj.to(device, non_blocking=True)
 
 class LlamaModel:
+    eos_token_ids = {128008, 128001, 128009}
+
     def __init__(self, 
         model_name: str,
         K: int = 0,
@@ -355,44 +357,11 @@ class LlamaModel:
         return logits
 
     @torch.inference_mode()
-    def generate(self,
-        input_ids: torch.LongTensor, 
-        max_tokens: int = 128):
-        
-        generated = input_ids[0].tolist()
-        prefix_len = input_ids.shape[1]
-        position_ids = torch.arange(prefix_len + max_tokens, device=self.device).unsqueeze(0)
-        torch.cuda.synchronize()
-        prefill_start_time = time.perf_counter()
-        logits = self.prefill(input_ids=input_ids)
-
-        torch.cuda.synchronize()
-        prefill_end_time = time.perf_counter()
-
-        self.prefill_latency = round((prefill_end_time - prefill_start_time), 4)
-
-        
-        max_tokens = max_tokens if self.fixed_output_length == 0 else self.fixed_output_length
-        torch.cuda.synchronize()
-        decode_start_time = time.perf_counter()
-        self.generate_token = 0
-        for k in range(max_tokens):
-            input_ids = logits.argmax(dim=-1)
-            self.generate_token += 1
-            logits = self.inference(input_ids=input_ids, position_ids=position_ids[:,prefix_len + k:prefix_len + k + 1])
-            generated.append(input_ids[0].item())
-            if input_ids[0].item() in [128008, 128001, 128009] and self.fixed_output_length == 0:
-                break
-            
-        torch.cuda.synchronize()
-        decode_end_time = time.perf_counter()
-        self.decode_latency = (decode_end_time - decode_start_time)
-        self.TPOT = round((self.decode_latency / self.generate_token)*1000, 4)
-
-        self.attention_server.clear()
-        self.k_cache.zero_()
-        self.v_cache.zero_()
-        return generated
+    def generate(self, input_ids: torch.LongTensor, max_tokens: int = 128,
+                 attention_mask=None, eos_token_id=None, pad_token_id=None):
+        return generate_batch(self, input_ids, max_tokens=max_tokens,
+                              attention_mask=attention_mask,
+                              eos_token_id=eos_token_id, pad_token_id=pad_token_id)
 
     def clear(self):
         self.attention_server.clear()

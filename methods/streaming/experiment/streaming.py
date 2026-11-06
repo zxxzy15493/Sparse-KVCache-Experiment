@@ -82,7 +82,8 @@ def build_chat(tokenizer, prompt, model_name):
     prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True
+            add_generation_prompt=True,
+            enable_thinking=False
         )
     return prompt
 

@@ -18,7 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from minference_time import MInference
+from minference_time import MInference, time_manager
 
 # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
 dataset2prompt = json.load(open("./config/dataset2prompt.json", "r"))
@@ -61,7 +61,7 @@ def load_model(model_name):
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype="auto",
-        device_map="cuda",
+        device_map="auto",
         _attn_implementation="flash_attention_2",
     )
     model.eval()
@@ -79,19 +79,23 @@ def get_pred(model, tokenizer, data, args):
     input_max_token = args.input_max_token
 
     inputs = tokenizer(
-        data, return_tensors="pt", return_attention_mask=True
+        data,
+        return_tensors="pt",
+        return_attention_mask=True,
+        truncation=True,
+        max_length=input_max_token,
     ).to(model.device)
-    inputs['input_ids'] = inputs.input_ids[:, :input_max_token]
-    if "attention_mask" in inputs:
-        inputs['attention_mask'] = inputs.attention_mask[:, :input_max_token]
 
-    model_chao = 'llama' if 'llama' in args.model_name.lower() else 'qwen'
-    output_path = Path(f'./results/EfficencyOverview/{model_chao}/')
-    if not output_path.exists():
-        output_path.mkdir(parents=True, exist_ok=True)
+    output_path = args.save_dir
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    for run_idx in range(6):
+    for run_idx in range(args.warmup):
         torch.cuda.empty_cache()
+        time_manager.myinit(
+            step=max(fixed_output_length, 1),
+            num_layers=model.config.num_hidden_layers,
+            num_heads=model.config.num_attention_heads,
+        )
 
         decode_latency, past_key_values, current_input_ids = [], None, inputs['input_ids']
 

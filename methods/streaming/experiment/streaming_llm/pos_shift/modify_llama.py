@@ -1,114 +1,131 @@
+"""StreamingLLM cache-eviction hook for Llama on Transformers 4.57+."""
+
 import math
-from typing import Optional, Tuple, List
 import types
+from typing import Optional
+
 import numpy as np
 import torch
-from torch import nn
-import torch.nn.functional as F
-
 from flash_attn import flash_attn_func
+from transformers.cache_utils import Cache
+from streaming_llm.kv_cache import BaseKVCache
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
-    repeat_kv,
     apply_rotary_pos_emb,
+    repeat_kv,
 )
-LlamaSdpaAttention = LlamaAttention
-LlamaFlashAttention2 = LlamaAttention
-
-def _ensure_attention_shape_attrs(module):
-    config = module.config
-    module.num_heads = getattr(module, "num_heads", config.num_attention_heads)
-    module.num_key_value_heads = getattr(module, "num_key_value_heads", getattr(config, "num_key_value_heads", config.num_attention_heads))
-    module.num_key_value_groups = getattr(module, "num_key_value_groups", module.num_heads // module.num_key_value_heads)
-    module.hidden_size = getattr(module, "hidden_size", config.hidden_size)
-from transformers.cache_utils import Cache
 
 __all__ = ["enable_llama_pos_shift_attention"]
+
+step_layer_recalls = {}
 
 
 def llama_pos_shift_attention_forward(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: tuple[torch.Tensor, torch.Tensor],
     attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
-    output_attentions: bool = False,
-    use_cache: bool = False,
+    past_key_values: Optional[Cache] = None,
     cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
+) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """Current LlamaAttention.forward with StartRecentKVCache eviction."""
     if not hasattr(self, "kv_cache"):
         from streaming_llm.kv_cache import StartRecentKVCache
+
         self.kv_cache = StartRecentKVCache(
             start_size=getattr(self.config, "start_size", 16),
             recent_size=getattr(self.config, "recent_size", 1008),
             k_seq_dim=2,
-            v_seq_dim=2
+            v_seq_dim=2,
         )
-    bsz, q_len, _ = hidden_states.size()
-    _ensure_attention_shape_attrs(self)
-    past_key_value = kwargs.get("past_key_values", past_key_value)
-    
-        
-    query_states = self.q_proj(hidden_states)
-    key_states = self.k_proj(hidden_states)
-    value_states = self.v_proj(hidden_states)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)  
-    position_embeddings = kwargs.get("position_embeddings")
-    if position_embeddings is None:
-        position_ids = position_ids if position_ids is not None else cache_position.unsqueeze(0)
-        position_embeddings = self.rotary_emb(value_states, position_ids)
+    bsz, q_len, _ = hidden_states.shape
+    if q_len > 1:
+        self.absolute_full_k = None
+        step_layer_recalls["_global_step"] = 0
+
+    hidden_shape = (bsz, q_len, -1, self.head_dim)
+    query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+    key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+    value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
     cos, sin = position_embeddings
-
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-    if past_key_value is not None:
-        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-        key_states_compress, value_states_compress = self.kv_cache.evict_for_space(key_states, value_states)
-        
-        if hasattr(past_key_value, "layers"):
-            past_key_value.layers[self.layer_idx].keys = key_states_compress
-            past_key_value.layers[self.layer_idx].values = value_states_compress
-        else:
-            past_key_value.key_cache[self.layer_idx] = key_states_compress
-            past_key_value.value_cache[self.layer_idx] = value_states_compress
 
-    key_states = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
-    
-    query_states = query_states.transpose(1, 2)
-    key_states = key_states.transpose(1, 2)
-    value_states = value_states.transpose(1, 2)
+    key_states_for_attention = key_states
+    value_states_for_attention = value_states
+    if past_key_values is not None:
+        cache_kwargs = {
+            "sin": sin, "cos": cos, "cache_position": cache_position,
+            "query_states": query_states, "attention_mask": attention_mask,
+            "num_key_value_groups": self.num_key_value_groups,
+            "update_global_past_kv": getattr(self, "update_global_past_kv", True),
+        }
 
-    if attention_mask is not None:
-        if attention_mask.size() != (bsz, 1, q_len, key_states.shape[-2]):
-            raise ValueError(f"Attention mask size mismatch")
-
-    dropout_rate = self.attention_dropout if self.training else 0.0
-
-    attn_output = flash_attn_func(
-                    query_states, key_states, value_states, 
-                    dropout_p=dropout_rate, 
-                    causal=True
+        full_k = None
+        if getattr(self, "check_recall", False):
+            with torch.no_grad():
+                self.absolute_full_k = (
+                    torch.cat([self.absolute_full_k, key_states], dim=2)
+                    if self.absolute_full_k is not None
+                    else key_states.detach().clone()
                 )
 
-    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
-    attn_output = self.o_proj(attn_output)
+        key_states, value_states = past_key_values.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+        key_states_for_attention = key_states
+        value_states_for_attention = value_states
+        update_global_past_kv = not isinstance(past_key_values, BaseKVCache)
+        if update_global_past_kv:
+            compressed_key, compressed_value = self.kv_cache.evict_for_space(
+                key_states, value_states
+            )
 
+        if getattr(self, "check_recall", False) and q_len == 1 and update_global_past_kv:
+            full_k = self.absolute_full_k
+            full_len, k_size = full_k.shape[2], compressed_key.shape[2]
+            if full_len > k_size:
+                k_full_expanded = repeat_kv(full_k, self.num_key_value_groups)
+                scores = torch.matmul(query_states, k_full_expanded.transpose(-1, -2)) / math.sqrt(self.head_dim)
+                _, real_topk_indices = torch.topk(torch.softmax(scores, dim=-1), k=k_size, dim=-1)
+                retained = torch.cat([
+                    torch.arange(0, self.kv_cache.start_size, device=query_states.device),
+                    torch.arange(full_len - self.kv_cache.recent_size, full_len, device=query_states.device),
+                ])
+                step_layer_recalls[self.layer_idx] = torch.isin(
+                    real_topk_indices.reshape(-1, k_size), retained
+                ).float().mean().item()
+                if self.layer_idx == getattr(self.config, "num_hidden_layers", 32) - 1:
+                    step = step_layer_recalls.get("_global_step", 0)
+                    recalls = [step_layer_recalls.get(i, 0.0) for i in range(self.config.num_hidden_layers)]
+                    with open("streaming_recall_all_steps.csv", "a") as recall_file:
+                        recall_file.write(f"{step}," + ",".join(f"{v:.4f}" for v in recalls) + f",{np.mean(recalls):.4f}\n")
+                    step_layer_recalls.clear()
+                    step_layer_recalls["_global_step"] = step + 1
 
-    return attn_output, None
+        # Full KV remains available for the current attention calculation.
+        # The compressed cache is used only by the following forward call.
+        if update_global_past_kv:
+            cache_layer = past_key_values.layers[self.layer_idx]
+            cache_layer.keys = compressed_key
+            cache_layer.values = compressed_value
 
+    groups = query_states.shape[1] // key_states_for_attention.shape[1]
+    key_states = repeat_kv(key_states_for_attention, groups)
+    value_states = repeat_kv(value_states_for_attention, groups)
+    attn_output = flash_attn_func(
+        query_states.transpose(1, 2),
+        key_states.transpose(1, 2),
+        value_states.transpose(1, 2),
+        dropout_p=self.attention_dropout if self.training else 0.0,
+        causal=True,
+    )
+    attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
+    return self.o_proj(attn_output), None
 
 
 def enable_llama_pos_shift_attention(model):
-
-
-    for name, module in model.named_modules():
-        if isinstance(module, (LlamaAttention, LlamaSdpaAttention, LlamaFlashAttention2)):
+    for module in model.modules():
+        if isinstance(module, LlamaAttention):
             module.forward = types.MethodType(llama_pos_shift_attention_forward, module)
-
-

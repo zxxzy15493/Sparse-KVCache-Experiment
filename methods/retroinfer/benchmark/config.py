@@ -32,8 +32,13 @@ def generate_config(
     aprox_cluster_size = 16
 
     CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
-    MODEL_NAME = model_name.split("/")[-1]+'.json'
+    model_basename = model_name.split("/")[-1]
+    MODEL_NAME = model_basename + '.json'
     CONFIG_FILE = os.path.join(CONFIG_DIR, MODEL_NAME)
+    # Dense Qwen3 checkpoints share the common Qwen3 default profile
+    # unless a model-specific calibrated JSON file has been added.
+    if not os.path.isfile(CONFIG_FILE) and model_basename.lower().startswith("qwen3"):
+        CONFIG_FILE = os.path.join(CONFIG_DIR, "Qwen3.json")
     with open(CONFIG_FILE, "r") as f:
         original_config = json.load(f)
     

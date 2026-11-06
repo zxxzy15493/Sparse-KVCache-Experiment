@@ -14,7 +14,8 @@ LongBench=(
     "repobench-p"
 )
 
-MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+Qwen="Qwen/Qwen2.5-7B-Instruct"
+Qwen3="Qwen/Qwen3-32B"
 KEY_SIZE=992
 RECENT_SIZE=32
 TAU_INIT=1.0
@@ -26,7 +27,7 @@ for DATASET in "${LongBench[@]}"; do
     echo "$DATASET"
 
     python keyformer.py \
-        --model_name_or_path "$MODEL_PATH" \
+        --model_name_or_path "$Qwen" \
         --dataset_name "$DATASET" \
         --keyformer \
         --key_size "$KEY_SIZE" \

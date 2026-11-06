@@ -12,6 +12,11 @@ def enable_streaming_llm(model, args):
         )
 
         enable_llama_pos_shift_attention(model)
+    elif model.config.model_type == "qwen3":
+        k_seq_dim = v_seq_dim = 2
+        from streaming_llm.pos_shift.modify_qwen3 import enable_qwen_pos_shift_attention
+
+        enable_qwen_pos_shift_attention(model)
     elif "qwen" in model.config.model_type:
         k_seq_dim = v_seq_dim = 2
         from streaming_llm.pos_shift.modify_qwen import enable_qwen_pos_shift_attention
@@ -22,4 +27,3 @@ def enable_streaming_llm(model, args):
         enable_glm_pos_shift_attention(model)
     else:
         raise ValueError(f"got {model.config.model_type}")
-

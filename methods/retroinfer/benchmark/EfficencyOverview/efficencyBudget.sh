@@ -28,8 +28,8 @@ elif [ "$RATIO_OR_FIXED" -eq 0 ]; then
     RESULT_DIR="${RESULT_DIR}/Ratio/${BUDGET_RATIO}_${ESTIMATE_RATIO}"
     MODE="Ratio"
 else
-    # ， mode 
-    echo $RATIO_OR_FIXED"
+    echo "ratio_or_fixed must be 0 (ratio) or 1 (fixed), got: ${RATIO_OR_FIXED}" >&2
+    exit 2
 fi
 
 mkdir -p ${RESULT_DIR}
@@ -52,7 +52,7 @@ echo "Start to predict..."
 python -u ./pred.py \
     --attn_type ${ATTN_TYPE} \
     --save_dir ${RESULT_DIR} \
-    --model ${MODEL} \
+    --model_name ${MODEL} \
     --dtype bf16 \
     --device auto \
     --benchmark "GSM8K" \
@@ -66,4 +66,3 @@ python -u ./pred.py \
     --prefill_method ${PREFILL_METHOD} \
     --fixed_output_length ${FIXED_OUTPUT_LENGTH} \
     --num_samples ${NUM_EXAMPLES}  > ${LOG_DIR}${INPUT_MAX_TOKEN}_${FIXED_OUTPUT_LENGTH}_${BUDGET}.log 2>&1
-

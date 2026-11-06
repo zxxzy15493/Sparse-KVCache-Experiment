@@ -61,11 +61,13 @@ def _triton_mixed_sparse_attn_fwd_kernel(
 
     qo_offset = (off_hz // H) * stride_qz + (off_hz % H) * stride_qh
     kv_offset = (off_hz // H) * stride_kz + (off_hz % H) * stride_kh
+    v_offset = (off_hz // H) * stride_vz + (off_hz % H) * stride_vh
+    o_offset = (off_hz // H) * stride_oz + (off_hz % H) * stride_oh
 
     q_ptrs = Q + qo_offset + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk
     k_ptrs = K + kv_offset + offs_d[:, None] * stride_kk
-    v_ptrs = V + kv_offset + offs_d[None, :] * stride_vk
-    o_ptrs = Out + qo_offset + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok
+    v_ptrs = V + v_offset + offs_d[None, :] * stride_vk
+    o_ptrs = Out + o_offset + offs_m[:, None] * stride_om + offs_d[None, :] * stride_ok
 
     num_blks = tl.load(block_count + off_hz * NUM_ROWS + start_m)
     blks_ptr = block_offset + (off_hz * NUM_ROWS + start_m) * NNZ_S
@@ -184,92 +186,18 @@ def vertical_slash_sparse_attention(
     s_idx: torch.Tensor,  # [BATCH, N_HEADS, NNZ_S]
     block_size_M: int = 64,
     block_size_N: int = 64,
-    RECALL: bool = False
+    seqlens: torch.Tensor = None,  # [BATCH, ]; valid tokens precede right padding
 ):
     if convert_vertical_slash_indexes_opt is not None:
-        return vertical_slash_sparse_attention_wo_pad(query, key, value, v_idx, s_idx)
+        return vertical_slash_sparse_attention_wo_pad(
+            query, key, value, v_idx, s_idx, block_size_M, block_size_N, seqlens=seqlens,
+        )
     
     batch_size, num_heads, context_size, head_dim = query.shape
     v_idx = v_idx.to(torch.int32).reshape((batch_size, num_heads, -1)).sort(dim=-1, descending=False)[0]
     s_idx = s_idx.to(torch.int32).reshape((batch_size, num_heads, -1)).sort(dim=-1, descending=True)[0]
 
-    if RECALL:
-        device = query.device
-        k_top = 100
-        N = context_size - k_top
 
-        avg_recall = 0.0
-        weight_ratio = 0.0
-
-        # 1.  (， device)
-        arange = torch.arange(context_size, device=device)
-        MASK = (arange[None, None, :, None] < arange[None, None, None, :])
-        
-        # 2.  Attention Score  Weights
-        attn_score = query @ key.transpose(-1, -2) * (head_dim ** -0.5)
-        attn_score = torch.masked_fill(attn_score, MASK, -torch.inf)
-        attn_weights = torch.softmax(attn_score, dim=-1, dtype=torch.bfloat16)
-        
-        # 3.  ( k_top )，
-        valid_scores = attn_score[0, 0, k_top:, :]      # Shape: [N, context_size]
-        valid_weights = attn_weights[0, 0, k_top:, :]   # Shape: [N, context_size]
-        
-        del attn_score, attn_weights
-
-        v_idx_flat = v_idx[0, 0, :]
-        s_idx_flat = s_idx[0, 0, :]
-        
-        #  v_idx ()
-        mask_v = torch.zeros(context_size, dtype=torch.bool, device=device)
-        mask_v[v_idx_flat] = True
-        
-        del v_idx_flat
-
-        #  s_idx (， context_size)
-        mask_s = torch.zeros(context_size, dtype=torch.bool, device=device)
-        mask_s[s_idx_flat] = True
-        
-        del s_idx_flat
-
-        # 5.  TopK  Token Recall
-        topk_indices = valid_scores.topk(k_top, dim=-1).indices # Shape: [N, k_top]
-        
-        # hit_v: ，
-        hit_v = mask_v[topk_indices] # Shape: [N, k_top]
-        
-        # hit_s:  line - topk_indices，
-        lines = torch.arange(k_top, context_size, device=device).unsqueeze(1) # Shape: [N, 1]
-        topK_s = lines - topk_indices # Shape: [N, k_top]
-
-        del topk_indices, valid_scores
-
-        
-        hit_s = torch.zeros_like(topK_s, dtype=torch.bool)
-        hit_s = mask_s[topK_s]
-
-        #  Token Recall
-        recall_token_n = (hit_v | hit_s).sum(dim=-1) # Shape: [N]
-        avg_recall = (recall_token_n / k_top).mean().item()
-        
-        del topK_s, hit_v, hit_s, recall_token_n
-
-
-        # 6.  Weight Recall
-        #  [N, context_size] 
-        col_indices = torch.arange(context_size, device=device).unsqueeze(0) # Shape: [1, context_size]
-        diff_matrix = lines - col_indices # Shape: [N, context_size]
-        
-        mask_s_matrix = torch.zeros_like(diff_matrix, dtype=torch.bool)
-        mask_s_matrix = mask_s[diff_matrix]
-        
-        # :  v_idx ， (line - )  s_idx 
-        hit_weight_matrix = mask_v.unsqueeze(0) | mask_s_matrix # Shape: [N, context_size]
-        
-        total_recall_weight = (valid_weights * hit_weight_matrix).sum().item()
-        
-        weight_ratio = total_recall_weight / N 
-     
-    
 
     pad = (block_size_M - context_size) & (block_size_M - 1)
     query = torch.nn.functional.pad(query, [0, 0, 0, pad, 0, 0, 0, 0])
@@ -285,7 +213,10 @@ def vertical_slash_sparse_attention(
     
         
 
-    seqlens = torch.tensor([context_size], dtype=torch.int32, device=query.device)
+    if seqlens is None:
+        seqlens = torch.full((batch_size,), context_size, dtype=torch.int32, device=query.device)
+    else:
+        seqlens = seqlens.to(device=query.device, dtype=torch.int32).contiguous()
     sm_scale = head_dim ** -0.5
     block_count, block_offset, column_count, column_index = convert_vertical_slash_indexes(
         seqlens, v_idx, s_idx, context_size, block_size_M, block_size_N,
@@ -306,14 +237,14 @@ def vertical_slash_sparse_attention(
             block_count, block_offset, column_count, column_index,
             sm_scale, block_size_M, block_size_N,
         )
-
-    if RECALL:
-        return out[..., :context_size, :head_dim], avg_recall, weight_ratio
     return out[..., :context_size, :head_dim]
 
-def vertical_slash_sparse_attention_wo_pad(query, key, value, v_idx, s_idx, block_size_M: int = 64, block_size_N: int = 64):
+def vertical_slash_sparse_attention_wo_pad(query, key, value, v_idx, s_idx, block_size_M: int = 64, block_size_N: int = 64, seqlens=None):
     batch_size, num_heads, context_size, head_dim = query.shape
-    seqlens = torch.tensor([context_size], dtype=torch.int32, device=query.device)
+    if seqlens is None:
+        seqlens = torch.full((batch_size,), context_size, dtype=torch.int32, device=query.device)
+    else:
+        seqlens = seqlens.to(device=query.device, dtype=torch.int32).contiguous()
     
     v_idx = v_idx.to(torch.int32).reshape((batch_size, num_heads, -1)).sort(dim=-1, descending=False)[0]
     s_idx = s_idx.to(torch.int32).reshape((batch_size, num_heads, -1)).sort(dim=-1, descending=True)[0]

@@ -5,6 +5,12 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL2PATH = {
+    "Qwen/Qwen3-32B": os.path.join(
+            BASE_DIR, "Qwen3-32b-search-config.json"
+    ),
+    "Qwen/Qwen3-4B": os.path.join(
+            BASE_DIR, "Qwen3-4b-search-config.json"
+    ),
     "qwen2.5-7b": os.path.join(
         BASE_DIR, "Qwen2.5_7B_Instruct_1M.json"
     ),

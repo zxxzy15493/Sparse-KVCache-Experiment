@@ -131,6 +131,8 @@ if __name__ == '__main__':
                     predictions.append(data["pred"])
                     answers.append(data["answers"])
                     all_classes = data.get("all_classes", None)
+            if not predictions:
+                raise ValueError(f"Prediction file is empty: {path}{filename}")
             score = score_longbench(dataset, predictions, answers, all_classes)
             scores[dataset] = score
 

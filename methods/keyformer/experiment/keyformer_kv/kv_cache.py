@@ -18,7 +18,7 @@ class KeyformerKVCache:
         self.key_score = None 
         
     @torch.no_grad()
-    def evict_for_space(self, query_states, key_states, value_states, itr_count):
+    def evict_for_space(self, query_states, key_states, value_states, itr_count, attention_mask=None):
         bsz, num_heads, q_len, head_dim = query_states.shape
         kv_seq_len = key_states.shape[self.k_seq_dim]
         device = query_states.device
@@ -27,6 +27,7 @@ class KeyformerKVCache:
         current_tau = self.tau_init + (itr_count * self.tau_delta)
         current_scores = torch.zeros((bsz, num_heads, kv_seq_len), device=device, dtype=torch.bfloat16)
         chunk_size = 128
+        padding_mask = attention_mask[:, -kv_seq_len:].to(torch.bool) if attention_mask is not None else None
 
         for i in range(0, q_len, chunk_size):
             end_idx = min(i + chunk_size, q_len)
@@ -40,9 +41,16 @@ class KeyformerKVCache:
                 mask = row_indices >= (col_indices - (kv_seq_len - q_len))
                 attn_weights_chunk.masked_fill_(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
+            if padding_mask is not None:
+                attn_weights_chunk.masked_fill_(~padding_mask[:, None, None, :], float("-inf"))
+
             gumbel_weight = torch.nn.functional.gumbel_softmax(
                 attn_weights_chunk, tau=current_tau, hard=False, dim=-1
             ).to(torch.bfloat16)
+            gumbel_weight = torch.nan_to_num(gumbel_weight)
+            if padding_mask is not None and q_len == kv_seq_len:
+                query_mask = padding_mask[:, i:end_idx].to(gumbel_weight.dtype)
+                gumbel_weight *= query_mask[:, None, :, None]
             
             current_scores += gumbel_weight.sum(dim=-2)
             

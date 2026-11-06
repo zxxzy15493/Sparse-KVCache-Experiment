@@ -4,7 +4,13 @@
 import json
 from functools import partial
 from typing import Any
-from .modules.forward import attn_forward, LlamaDecoderLayer_forward, full_attn_forward, Full_LlamaDecoderLayer_forward
+from .modules.forward import (
+    Qwen3_attn_forward,
+    LlamaDecoderLayer_forward,
+    attn_forward,
+    full_attn_forward,
+    Full_LlamaDecoderLayer_forward,
+)
 from .configs.model2path import MODEL2PATH
 
 def update_config_path(model_name: str = None):
@@ -29,13 +35,19 @@ class MInference:
         Attention = model.model.layers[0].self_attn.__class__
         DecoderLayer = model.model.layers[0].__class__
 
+        attention_forward = (
+            Qwen3_attn_forward
+            if getattr(model.config, "model_type", None) == "qwen3"
+            else attn_forward
+        )
         forward = partial(
-            attn_forward,
+            attention_forward,
             best_pattern=best_pattern
         )
 
         def update_module(m):
             if isinstance(m, Attention):
+                m.num_layers = len(model.model.layers)
                 m.forward = (
                     lambda self, *args, **kwargs: forward(self, *args, **kwargs)
                 ).__get__(m, Attention)

@@ -16,6 +16,7 @@ LongBench=(
       
 Qwen="Qwen2.5-7B-Instruct"
 Llama="Llama-3.1-8B-Instruct"
+Qwen3="Qwen3-32B"
 DATASET="LongBench"
 COMPRESS_ARGS_PATH="./config/ablation_c1024_w32_k7_maxpool.json"
 

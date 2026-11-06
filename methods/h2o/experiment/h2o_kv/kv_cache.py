@@ -12,12 +12,13 @@ class H2OKVCache:
         self.hh_score = None
         
     @torch.no_grad()
-    def evict_for_space(self, query_states, key_states, value_states):
+    def evict_for_space(self, query_states, key_states, value_states, attention_mask=None):
         bsz, num_heads, q_len, head_dim = query_states.shape
         kv_seq_len = key_states.shape[self.k_seq_dim]
         device = query_states.device
         current_scores = torch.zeros((bsz, num_heads, kv_seq_len), device=device, dtype=torch.bfloat16)
         chunk_size = 256
+        padding_mask = attention_mask[:, -kv_seq_len:].to(torch.bool) if attention_mask is not None else None
 
         for i in range(0, q_len, chunk_size):
             end_idx = min(i + chunk_size, q_len)
@@ -31,7 +32,14 @@ class H2OKVCache:
                 mask = row_indices >= (col_indices - (kv_seq_len - q_len))
                 attn_weights_chunk.masked_fill_(~mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
+            if padding_mask is not None:
+                attn_weights_chunk.masked_fill_(~padding_mask[:, None, None, :], float("-inf"))
+
             attn_weights_chunk = torch.nn.functional.softmax(attn_weights_chunk, dim=-1, dtype=torch.bfloat16)
+            attn_weights_chunk = torch.nan_to_num(attn_weights_chunk)
+            if padding_mask is not None and q_len == kv_seq_len:
+                query_mask = padding_mask[:, i:end_idx].to(attn_weights_chunk.dtype)
+                attn_weights_chunk *= query_mask[:, None, :, None]
             current_scores += attn_weights_chunk.sum(dim=-2)
             del attn_weights_chunk
 

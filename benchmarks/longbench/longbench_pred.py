@@ -98,14 +98,20 @@ def truncate_prompt(tokenizer, prompt: str, max_context_length: int, family: str
         tokens[-(max_context_length - first):], skip_special_tokens=True
     )
 
-
+## raw + nothink
 def build_chat(tokenizer, prompt: str, dataset: str) -> str:
-    if dataset not in CHAT_DATASETS or not getattr(tokenizer, "chat_template", None):
+    is_qwen3 = "qwen3" in getattr(tokenizer, "name_or_path", "").lower()
+    if dataset not in CHAT_DATASETS:
+        if is_qwen3:
+            # Preserve LongBench's raw prompt and prefill an empty thinking block.
+            return prompt + "<think>\n\n</think>\n\n"
+        return prompt
+    if not getattr(tokenizer, "chat_template", None):
         return prompt
     kwargs = {}
     # Qwen3's default template enables its thinking mode.  LongBench expects a
     # direct answer, so disable it while preserving older Qwen templates.
-    if getattr(tokenizer, "name_or_path", "").lower().find("qwen3") >= 0:
+    if is_qwen3:
         kwargs["enable_thinking"] = False
     try:
         return tokenizer.apply_chat_template(
@@ -114,13 +120,36 @@ def build_chat(tokenizer, prompt: str, dataset: str) -> str:
     except TypeError:
         return tokenizer.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False)
 
+# template + nothink
+# def build_chat(tokenizer, prompt: str, dataset: str) -> str:
+#     is_qwen3 = "qwen3" in getattr(tokenizer, "name_or_path", "").lower()
+#     # Qwen3 needs the chat template even on LongBench's raw-prompt tasks so
+#     # enable_thinking=False takes effect.
+#     if dataset not in CHAT_DATASETS and not is_qwen3:
+#         return prompt
+#     if not getattr(tokenizer, "chat_template", None):
+#         return prompt
+#     kwargs = {}
+#     # Qwen3's default template enables its thinking mode.  LongBench expects a
+#     # direct answer, so disable it while preserving older Qwen templates.
+#     if is_qwen3:
+#         kwargs["enable_thinking"] = False
+#     try:
+#         return tokenizer.apply_chat_template(
+#             [{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False, **kwargs
+#         )
+#     except TypeError:
+#         if is_qwen3:
+#             raise
+#         return tokenizer.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False)
+
 
 def post_process(prediction: str, model_name: str) -> str:
     normalized_model_name = model_name.lower()
     if normalized_model_name.startswith("glm-") or "/glm" in normalized_model_name:
         return prediction.split("Assistant:")[-1]
-    if "qwen" in normalized_model_name:
-        return prediction.split("<|im_end|>")[0].split("<|im_start|>")[-1].strip()
+    # if "qwen" in normalized_model_name:
+    #     return prediction.split("<|im_end|>")[0].split("<|im_start|>")[-1].strip()
     return prediction
 
 

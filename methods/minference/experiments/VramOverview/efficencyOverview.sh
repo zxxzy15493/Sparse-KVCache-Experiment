@@ -1,4 +1,4 @@
-
+set -euo pipefail
 
 
 MODEL_NAME=${1}
@@ -6,8 +6,8 @@ warmup=${2}
 input_max_token=${3}
 fixed_output_length=${4}
 
-RESULTS_DIR="./results/EfficencyOverview/${MODEL_NAME}/${input_max_token}_${fixed_output_length}"
-LOG_DIR="./log/EfficencyOverview/${MODEL_NAME}/"
+RESULTS_DIR="./results/VramOverview/${MODEL_NAME}/${input_max_token}_${fixed_output_length}"
+LOG_DIR="./log/VramOverview/${MODEL_NAME}/"
 
 
 # mkdir -p ${RESULTS_DIR}
@@ -22,9 +22,21 @@ case $MODEL_NAME in
         MODEL_PATH="Qwen/Qwen2.5-7B-Instruct-1M"
         MODEL_TEMPLATE_TYPE="qwen2.5"
         ;;
+    qwen3-4b)
+        MODEL_PATH="Qwen/Qwen3-4B"
+        MODEL_TEMPLATE_TYPE="qwen3"
+        ;;
+    qwen3-32b)
+        MODEL_PATH="Qwen/Qwen3-32B"
+        MODEL_TEMPLATE_TYPE="qwen3"
+        ;;
     glm-4-9b-chat-1m)
         MODEL_PATH="THUDM/glm-4-9b-chat-1m"
         MODEL_TEMPLATE_TYPE="glm-4"
+        ;;
+    *)
+        echo "Unsupported model: ${MODEL_NAME}" >&2
+        exit 1
         ;;
 esac
 
@@ -35,4 +47,4 @@ python ./pred.py \
     --warmup ${warmup} \
     --input_max_token ${input_max_token} \
     --fixed_output_length ${fixed_output_length} \
-    >${LOG_DIR}/EfficencyOverview_${input_max_token}_${fixed_output_length}.log 2>&1
+    >${LOG_DIR}/VramOverview_${input_max_token}_${fixed_output_length}.log 2>&1

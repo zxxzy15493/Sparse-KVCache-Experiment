@@ -7,7 +7,7 @@ import numpy as np
 import random
 import argparse
 import torch
-from snapkv.monkeypatch.monkeypatch import replace_llama, replace_qwen, replace_glm
+from snapkv.monkeypatch.monkeypatch import replace_llama, replace_qwen, replace_glm,replace_qwen3
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default=None)
@@ -21,7 +21,7 @@ def parse_args(args=None):
 # This is the customized building prompt for chat models
 def build_chat(tokenizer, prompt):
     prompt = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                            add_generation_prompt=True, tokenize=False)  
+                                            add_generation_prompt=True, tokenize=False,enable_thinking=False)
     return prompt
 
 @torch.inference_mode()
@@ -188,6 +188,7 @@ if __name__ == '__main__':
         write_model_name = model_name
         replace_llama()
         replace_qwen()
+        replace_qwen3()
     else:
         compress = False
         compress_args = None

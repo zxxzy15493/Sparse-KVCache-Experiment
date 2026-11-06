@@ -43,11 +43,13 @@ def load_dataset(args):
 def get_pred(llm, data, model_name, pred_dir, args):
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    inputs = tokenizer(data, return_tensors="pt", return_attention_mask=True).to(llm.device)
-
-    inputs['input_ids'] = inputs.input_ids[:, :args.input_max_token]
-    if "attention_mask" in inputs:
-        inputs['attention_mask'] = inputs.attention_mask[:, :args.input_max_token]
+    inputs = tokenizer(
+        data,
+        return_tensors="pt",
+        return_attention_mask=True,
+        truncation=True,
+        max_length=args.input_max_token,
+    ).to(llm.device)
 
     seq_len = inputs.input_ids.shape[1]
 
@@ -56,14 +58,24 @@ def get_pred(llm, data, model_name, pred_dir, args):
     torch.cuda.memory._record_memory_history()
 
     # out = llm.generate(**inputs, min_new_tokens=args.fixed_output_length, max_new_tokens=args.fixed_output_length, top_k=1, temperature=1.0, top_p=1.0, repetition_penalty=1.0)
-    out = llm.generate(**inputs, min_new_tokens=args.fixed_output_length, max_new_tokens=args.fixed_output_length, do_sample=False, temperature=1.0, top_p=1.0, repetition_penalty=1.0)
+    out = llm.generate(
+        **inputs,
+        min_new_tokens=args.fixed_output_length,
+        max_new_tokens=args.fixed_output_length,
+        do_sample=False,
+        repetition_penalty=1.0,
+    )
 
     pred = tokenizer.decode(out[0][seq_len:], skip_special_tokens=True)
 
     peak_memory = torch.cuda.memory.max_memory_allocated() / (1024 ** 2)  # Convert to MB
     # pred_dir = Path(pred_dir) / f'VramOverview_{args.fixed_output_length}.jsonl'
-    model_chao = 'llama' if 'llama' in args.model_name.lower() else 'qwen'
-    output_path = Path(f'./results/VramOverview/{model_chao}/')
+    model_family = (
+        "qwen3" if "qwen3" in args.model_name.lower()
+        else "llama" if "llama" in args.model_name.lower()
+        else "qwen"
+    )
+    output_path = Path(f'./results/VramOverview/{model_family}/')
     if not output_path.exists():
         output_path.mkdir(parents=True, exist_ok=True)
     with open(Path(output_path) / f'VramOverview_{args.input_max_token}_{args.fixed_output_length}.jsonl', "a", encoding="utf-8") as f:

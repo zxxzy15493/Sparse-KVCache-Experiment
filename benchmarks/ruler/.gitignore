@@ -1,4 +1,5 @@
 benchmark_root/
+benchmark_root_pred/
 __pycache__/
 data/__pycache__/
 data/synthetic/__pycache__/

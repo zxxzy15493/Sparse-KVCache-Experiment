@@ -7,8 +7,7 @@ import math
 from .utils import apply_rotary_pos_emb, layer_norm
 import flashinfer
 from .attnserver import LSHSparseAttnServer
-from termcolor import colored
-import time
+from .generation import generate_batch
 
 class LLMLayer:
     def __init__(self, layer_idx, config: Qwen2Config) -> None:
@@ -90,6 +89,8 @@ class LLMLayer:
         self.down_proj =  self.down_proj.to(device, non_blocking=True)
 
 class Qwen2Model:
+    eos_token_ids = {151645}
+
     def __init__(self, 
         model_name: str,
         K: int = 0,
@@ -151,8 +152,11 @@ class Qwen2Model:
         self.norm_weight = hf_model.model.norm.weight.detach().to(self.device)
         self.norm_variance_epsilon = hf_model.model.norm.variance_epsilon
   
-        self.inv_freq = hf_model.model.layers[0].self_attn.rotary_emb.inv_freq.detach().to(self.device)
-        self.attention_scaling = 1.0
+        rotary_emb = getattr(hf_model.model, "rotary_emb", None)
+        if rotary_emb is None:
+            rotary_emb = hf_model.model.layers[0].self_attn.rotary_emb
+        self.inv_freq = rotary_emb.inv_freq.detach().to(self.device)
+        self.attention_scaling = getattr(rotary_emb, "attention_scaling", 1.0)
 
         position_ids = torch.arange(0, self.max_length).unsqueeze(0).to(self.device)
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
@@ -330,9 +334,9 @@ class Qwen2Model:
         
     @torch.inference_mode()
     def inference(self,
-            k: int,
             input_ids: torch.LongTensor,
-            position_ids: torch.LongTensor):
+            position_ids: torch.LongTensor,
+            k: int = 0):
         
         self.attention_server.plan()
         hidden_states = F.embedding(input_ids, self.embed_tokens)
@@ -367,46 +371,13 @@ class Qwen2Model:
         return logits
 
     @torch.inference_mode()
-    def generate(self,
-        input_ids: torch.LongTensor, 
-        max_tokens: int = 128):
-        
-        generated = input_ids[0].tolist()
-        prefix_len = input_ids.shape[1]
-        position_ids = torch.arange(prefix_len + max_tokens, device=self.device).unsqueeze(0)
+    def generate(self, input_ids: torch.LongTensor, max_tokens: int = 128,
+                 attention_mask=None, eos_token_id=None, pad_token_id=None):
+        return generate_batch(self, input_ids, max_tokens=max_tokens,
+                              attention_mask=attention_mask,
+                              eos_token_id=eos_token_id, pad_token_id=pad_token_id)
 
-        torch.cuda.synchronize()
-        start_time = time.perf_counter()
-
-        logits = self.prefill(input_ids=input_ids)
-
-        torch.cuda.synchronize()
-        self.prefill_latency = time.perf_counter() - start_time
-        print(colored(f"the prefill time is {self.prefill_latency}", 'green')) 
-
-        max_tokens = max_tokens if self.fixed_output_length == 0 else self.fixed_output_length
-        decode_start = time.perf_counter()
-        generate_token = 0
-        for k in range(max_tokens):
-            start_time = time.time()
-            input_ids = logits.argmax(dim=-1)
-            generate_token += 1
-            logits = self.inference(k = k, input_ids=input_ids, position_ids=position_ids[:,prefix_len + k:prefix_len + k + 1])
-            generated.append(input_ids[0].item())
-            if input_ids[0].item() in [151645] and self.fixed_output_length == 0:
-                break
-            
-
-
-        torch.cuda.synchronize()
-        decode_end = time.perf_counter()
-        self.decode_latency = round((decode_end - decode_start), 5)
-        self.Latency = self.prefill_latency + self.decode_latency
-        self.TPOT = round((decode_end - decode_start)  / (generate_token) * 1000, 5)
-        print(colored(f"the decode time is {self.decode_latency}, the total time is {self.Latency}, the TPOT is {self.TPOT}", 'green'))
+    def clear(self):
         self.attention_server.clear()
         self.k_cache.zero_()
         self.v_cache.zero_()
-        return generated
-    
-

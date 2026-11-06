@@ -10,7 +10,7 @@ from pathlib import Path
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, PROJECT_ROOT)
-from model_hub import LlamaModel, QwenModel, GlmModel, DeepSeekQwenModel
+from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel, DeepSeekQwenModel
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import generate_config, parse_attn_args
@@ -44,6 +44,14 @@ LOCAL_PATH_TO_SHORT = {
     "llama-3.1": "llama-3.1-8b",
     "qwen-2.5-7b-1m": "qwen-2.5-7b-1m",
     "qwen-2.5": "qwen-2.5-7b",
+    # The checked-in RULER prompts were generated with the shared Qwen3
+    # tokenizer and live under qwen3-32b.  All dense Qwen3 sizes can use them.
+    "qwen3-0.6b": "qwen3-32b",
+    "qwen3-1.7b": "qwen3-32b",
+    "qwen3-4b": "qwen3-32b",
+    "qwen3-8b": "qwen3-32b",
+    "qwen3-14b": "qwen3-32b",
+    "qwen3-32b": "qwen3-32b",
     "glm": "glm-4-9b",
 }
 
@@ -116,7 +124,18 @@ def load_dataset(args):
     if benchmark == "LongBench":
         from datasets import load_dataset as hf_load_dataset
 
-        data = [dict(sample) for sample in hf_load_dataset("THUDM/LongBench", task, split="test")]
+        # LongBench is a script-backed dataset.  This benchmark deliberately
+        # uses its official loader, so make that approval explicit rather than
+        # allowing an interactive prompt to terminate non-interactive jobs.
+        data = [
+            dict(sample)
+            for sample in hf_load_dataset(
+                "THUDM/LongBench",
+                task,
+                split="test",
+                trust_remote_code=True,
+            )
+        ]
         max_new_tokens = dataset2maxlen.get(task, 128)
 
         # Apply chat template for non-generation tasks
@@ -129,11 +148,16 @@ def load_dataset(args):
             prompt = prompt_format.format(**json_obj)
             if task not in GENERATION_TASKS:
                 message = [{"role": "user", "content": prompt}]
-                prompt = tokenizer.apply_chat_template(
-                    message,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
+                template_kwargs = {
+                    "tokenize": False,
+                    "add_generation_prompt": True,
+                }
+                # Qwen3 enables its reasoning mode by default.  LongBench
+                # expects the final answer, not a reasoning trace, so request
+                # the non-thinking branch exposed by its chat template.
+                if "qwen3" in model_path.lower():
+                    template_kwargs["enable_thinking"] = False
+                prompt = tokenizer.apply_chat_template(message, **template_kwargs)
             data[i]["input"] = prompt
 
     elif benchmark == "Synthetic":
@@ -199,6 +223,15 @@ def load_model(model_name, max_len, dtype, device, args):
             max_length=max_len,
             dtype=dtype,
             device_map=device,
+        )
+    elif 'Qwen3' in model_path:
+        llm = Qwen3Model(
+            model_path,
+            max_length=max_len,
+            dtype=dtype,
+            device_map=device,
+            RECALL=args.recall,
+            budget=args.budget,
         )
     elif 'Qwen' in model_path:
         llm = QwenModel(
@@ -330,7 +363,10 @@ if __name__ == "__main__":
 
     # Load model
     print(f"Loading model: {args.model_name}")
-    llm = load_model(args.model_name, max_len, dtype, args.device, args)
+    # RULER's declared length is the prompt length; reserve room for the
+    # benchmark answer as well so LLM.generate's capacity check remains valid.
+    model_max_len = max_len + max_new_tokens if args.benchmark == "Synthetic" else max_len
+    llm = load_model(args.model_name, model_max_len, dtype, args.device, args)
     print(f"Model loaded.")
 
     # Predict

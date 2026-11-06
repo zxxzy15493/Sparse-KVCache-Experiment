@@ -33,6 +33,8 @@ Templates = {
     
     # 'qwen-chat': "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{task_template}<|im_end|>\n<|im_start|>assistant\n",
     'qwen-chat': "<|im_start|>user\n{task_template}<|im_end|>\n<|im_start|>assistant\n",
+    # Qwen3's official non-thinking generation prompt appends an empty think block.
+    'qwen3-chat': "<|im_start|>user\n{task_template}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
     
     'jamba': "<|startoftext|><|bom|><|system|> <|eom|><|bom|><|user|> {task_template}<|eom|><|bom|><|assistant|>",
     

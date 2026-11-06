@@ -117,7 +117,7 @@ def load_model_and_tokenizer(args):
         config.cache_block_size = 128
         context_length = getattr(args, "max_seq_length", None)
         if context_length is not None:
-            # Reserve 1024 tokens for generation, block-aligned to avoid pre-allocating 128K for 4K tasks.
+            # 为生成阶段预留 1024 token，按 block 对齐，避免 4K 任务预分配 128K。
             capacity = max(2048, int(context_length) + 1024)
             config.max_seq_len = (
                 (capacity + config.cache_block_size - 1)
@@ -127,7 +127,7 @@ def load_model_and_tokenizer(args):
         config.global_cache_size = 4096
         config.cache_topk = 32
         initialize_objects(config, model=model_name)
-        # Shard directly onto target device, avoids holding full 32B weights alongside pinned CPU cache.
+        # 分片直接加载到目标卡，避免与 pinned CPU 缓存同时保留整份 32B 权重。
         model_kwargs["device_map"] = {"": str(device)}
 
     model = model_class.from_pretrained(path, torch_dtype=torch.bfloat16, config=config, **model_kwargs)

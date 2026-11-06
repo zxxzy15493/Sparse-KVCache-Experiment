@@ -153,5 +153,3 @@ def glm_forward(
     output = self.dense(attn_output)
 
     return output, kv_cache
-
-

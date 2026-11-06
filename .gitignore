@@ -5,10 +5,21 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+**/.cache/
 .coverage
 coverage.xml
 .vscode/
 *.egg-info/
+
+# 本地 Python 和 Conda 环境
+**/.venv/
+**/venv/
+**/env/
+**/conda_env/
+tmp/**
+docs/**
+
+# Keep the checked-in multi-GPU / multi-batch compatibility guide.
 
 # Experiment outputs and logs
 **/output/
@@ -17,15 +28,38 @@ coverage.xml
 **/logs/
 **/results/
 **/results_*/
+**/*_results/
+**/*_logs/
 *.log
+*.log.*
+*.out
+*.err
+*.stdout
+*.stderr
+*.status.tsv
 *report/
+benchmarks/scbench**
+# 忽略生成的基准数据集及其产物；保留 benchmarks/ruler/data/ 等源码目录。
+**/benchmark_root/
+**/benchmark_root_pred/
+**/generated_data/
+**/generated_datasets/
+**/dataset_cache/
+**/datasets_cache/
+benchmarks/scbench/reports/**/*.csv
+benchmarks/scbench/reports/**/*.json
+benchmarks/scbench/reports/**/*.md
 
 # Native/CUDA build products
 build/
 **/build-kv/
+**/cmake-build-*/
+**/dist/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/cmake_install.cmake
+**/.ninja_log
+**/.ninja_deps
 *.so
 *.so.*
 *.o
@@ -33,11 +67,27 @@ build/
 *.dylib
 *.dll
 *.ptx
+*.cubin
+*.fatbin
 
-# Generated batch-test measurements (keep the test scripts themselves)
-methods/*/duo_batch_test/*.json
-/efficiency/
+# Local batch-test probes are not part of the repository.  Ignoring the whole
+# directory prevents a clean checkout from receiving probe wrappers without
+# their local helper modules under docs/.
+methods/*/duo_batch_test/
+
+*report.md
+*plan.md
+*.csv
 
 # Local scratch files
 /cluster_config.json
 tmp.txt
+
+# Generated status from the Qwen3-32B LongBench parameter-grid runner
+benchmarks/longbench/qwen3_32b_all_methods.status.tsv
+
+methods/x-attention/Block-Sparse-Attention
+run.sh
+
+methods/magicpig_bak/
+AGENTS.md

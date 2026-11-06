@@ -5,6 +5,7 @@ import gc
 import flashinfer
 from .utils import layer_norm
 from .attnserver import LSHSparseAttnServer
+from .generation import generate_batch
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 
@@ -140,6 +141,7 @@ class GLMModel:
         dtype=torch.bfloat16,
         RECALL: bool = False,
         fixed_output_length: int = 0,
+        generation_buffer: int = 256,
     ) -> None:
         self.RECALL = RECALL
         self.fixed_output_length = fixed_output_length
@@ -183,6 +185,7 @@ class GLMModel:
                 K=K,
                 L=L,
                 batch_size=self.batch_size,
+                generation_buffer=generation_buffer,
                 max_length=self.max_length,
                 device=self.device,
                 dtype=self.dtype,
@@ -502,33 +505,11 @@ class GLMModel:
         return logits
 
     @torch.inference_mode()
-    def generate(
-        self,
-        input_ids: torch.LongTensor,
-        max_tokens: int = 128,
-    ):
-        generated = input_ids[0].tolist()
-        prefix_len = input_ids.shape[1]
-        position_ids = torch.arange(prefix_len + max_tokens, device=self.device).unsqueeze(0)
-
-        logits = self.prefill(input_ids=input_ids)
-
-        max_tokens = max_tokens if self.fixed_output_length == 0 else self.fixed_output_length
-        for k in range(max_tokens):
-            input_ids = logits.argmax(dim=-1)
-            generated.append(input_ids[0].item())
-            logits = self.inference(
-                input_ids=input_ids,
-                position_ids=position_ids[:, prefix_len + k : prefix_len + k + 1],
-            )
-            if input_ids[0].item() in self.eos_token_ids and self.fixed_output_length == 0:
-                break
-
-        self.attention_server.clear()
-        self.k_cache.zero_()
-        self.v_cache.zero_()
-        self._reset_past_key_states()
-        return generated
+    def generate(self, input_ids: torch.LongTensor, max_tokens: int = 128,
+                 attention_mask=None, eos_token_id=None, pad_token_id=None):
+        return generate_batch(self, input_ids, max_tokens=max_tokens,
+                              attention_mask=attention_mask,
+                              eos_token_id=eos_token_id, pad_token_id=pad_token_id)
 
     def clear(self):
         self.attention_server.clear()

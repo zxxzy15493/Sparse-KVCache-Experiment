@@ -18,6 +18,7 @@ LongBench=(
 Llama="Llama-3.1-8B-Instruct"
 Qwen="Qwen2.5-7B-Instruct"
 Qwen_1M="Qwen2.5-7B-Instruct-1M"
+Qwen3="Qwen3-32B"
 START_SIZE=16
 RECENT_SIZE=1008
 

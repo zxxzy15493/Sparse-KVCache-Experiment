@@ -178,7 +178,7 @@ class LLM:
         
         return logits
 
-    def inference(self, inputs_ids, fixed_output_length):
+    def inference(self, inputs_ids, fixed_output_length, decode_start_callback=None):
         outputs_ids = []    # multi iteration, multi request
         output_ids = []     # single iteration, multi request
         
@@ -197,6 +197,8 @@ class LLM:
         self.prefill_latency = round((prefill_end - prefill_start), 2)
 
         print("Start decoding ...")
+        if self.max_new_length > 1 and decode_start_callback is not None:
+            decode_start_callback()
         decode_start = time.perf_counter()
         self.max_new_length = self.max_new_length if fixed_output_length == 0 else fixed_output_length
         generate_token = 0
@@ -216,27 +218,40 @@ class LLM:
         if "deepseek" in model_name_lower:
             # DeepSeek-R1 distills may use either Qwen-style <|im_end|> or a plain EOS.
             stop_token_ids.update({151643, 151645})
+        self.stop_token_ids = stop_token_ids
+
+        # Track each request independently, including the first token emitted
+        # by prefill. A short answer in row 0 must not stop the other rows.
+        finished = torch.zeros(output_ids.shape[0], dtype=torch.bool, device=output_ids.device)
+        stop_tokens = torch.tensor(sorted(stop_token_ids), device=output_ids.device, dtype=output_ids.dtype)
+        if fixed_output_length == 0 and stop_token_ids:
+            finished = torch.isin(output_ids.squeeze(-1), stop_tokens)
+        padding_token = getattr(getattr(self, "tokenizer", None), "pad_token_id", None)
+        if padding_token is None and stop_token_ids:
+            padding_token = min(stop_token_ids)
 
         for _ in range(self.max_new_length-1):
+            if fixed_output_length == 0 and stop_token_ids and bool(finished.all()):
+                break
             logits = self.decode_forward(inputs_ids=output_ids)
             output_ids = logits.argmax(dim=-1)
+            if fixed_output_length == 0 and stop_token_ids:
+                output_ids = output_ids.masked_fill(finished.unsqueeze(-1), padding_token)
+                finished |= torch.isin(output_ids.squeeze(-1), stop_tokens)
             outputs_ids.append(output_ids)
             generate_token += 1
-            if fixed_output_length == 0 and stop_token_ids and output_ids[0].item() in stop_token_ids:
-                print("===" * 80)
-                print(colored(f"Stop token {output_ids[0].item()} generated, stopping decoding.", 'yellow'))
-                print("===" * 80)
-                break
 
         torch.cuda.synchronize()
         decode_end = time.perf_counter()
         self.decode_latency = round((decode_end - decode_start), 5)
         self.Latency = self.prefill_latency + self.decode_latency
 
-        self.TPOT = round((decode_end - decode_start)  / (generate_token) * 1000, 5)
+        seconds_per_step = (decode_end - decode_start) / generate_token if generate_token else 0.0
+        self.TPOT = round(seconds_per_step * 1000, 5)
+        throughput = self.batch_size * generate_token / (decode_end - decode_start) if generate_token and decode_end > decode_start else 0.0
         print(colored(
-            f"Decoding latency: {round((decode_end - decode_start)  / (generate_token), 5)} s/step, "
-            f"Throughput: {round(self.batch_size * (generate_token) / (decode_end - decode_start), 2)} tokens/s\n",
+            f"Decoding latency: {round(seconds_per_step, 5)} s/step, "
+            f"Throughput: {round(throughput, 2)} tokens/s\n",
             'green'
         ))
 
@@ -244,7 +259,17 @@ class LLM:
         
         return outputs_ids
 
-    def generate(self, attention_type, inputs_ids, attention_masks, max_new_length, attn_config=None, prefill_method="Full_Flash_Attn", fixed_output_length=0):
+    def generate(
+        self,
+        attention_type,
+        inputs_ids,
+        attention_masks,
+        max_new_length,
+        attn_config=None,
+        prefill_method="Full_Flash_Attn",
+        fixed_output_length=0,
+        decode_start_callback=None,
+    ):
         """ LLM Inference.
         Args:
             attention_type: str,
@@ -277,7 +302,11 @@ class LLM:
         print("Allocate GPU buffers and CPU pin memory ...\n")
         self.init_kv_cache(input_length, valid_start, attn_config)
 
-        outputs = self.inference(inputs_ids, fixed_output_length)
+        outputs = self.inference(
+            inputs_ids,
+            fixed_output_length,
+            decode_start_callback=decode_start_callback,
+        )
 
 
         return outputs

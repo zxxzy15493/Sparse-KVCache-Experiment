@@ -28,17 +28,23 @@ class TimeManager:
         self.write_kv_start_event = None
         self.write_kv_end_event = None
 
-    def myinit(self, step, num_layers):
+    def myinit(self, step, num_layers, num_heads=None):
         self.decode_step = 0
         self.step = step
         self.num_layers = num_layers
-        self.num_heads = num_layers
+        self.num_heads = num_layers if num_heads is None else num_heads
 
         self.prefill_latency = 0
 
         self.pattern_allocation_event_time_head = 0 
-        self.pattern_allocation_start_event_head = [torch.cuda.Event(enable_timing=True) for _ in range(self.num_heads * self.num_heads)]
-        self.pattern_allocation_end_event_head = [torch.cuda.Event(enable_timing=True) for _ in range(self.num_heads * self.num_heads)]
+        self.pattern_allocation_start_event_head = [
+            torch.cuda.Event(enable_timing=True)
+            for _ in range(self.num_layers * self.num_heads)
+        ]
+        self.pattern_allocation_end_event_head = [
+            torch.cuda.Event(enable_timing=True)
+            for _ in range(self.num_layers * self.num_heads)
+        ]
 
         self.decode_latency = 0
 
@@ -146,11 +152,11 @@ class Full_TimeManager:
         self.write_kv_start_event = None
         self.write_kv_end_event = None
 
-    def myinit(self, step, num_layers):
+    def myinit(self, step, num_layers, num_heads=None):
         self.decode_step = 0
         self.step = step
         self.num_layers = num_layers
-        self.num_heads = num_layers
+        self.num_heads = num_layers if num_heads is None else num_heads
 
         self.prefill_latency = 0
 

@@ -40,6 +40,7 @@ def generate(self, *args, **kwargs):
     attention_type = kwargs.pop("attention_type", getattr(loader_args, "attn_type", "RetroInfer"))
     prefill_method = kwargs.pop("prefill_method", getattr(loader_args, "prefill_method", "Full_Flash_Attn"))
     fixed_output_length = kwargs.pop("fixed_output_length", 0)
+    decode_start_callback = kwargs.pop("decode_start_callback", None)
     eos_token_id = kwargs.pop("eos_token_id", None)
 
     eos_tokens = getattr(self, "eos_tokens", [])
@@ -84,6 +85,7 @@ def generate(self, *args, **kwargs):
             attn_config=attn_config,
             prefill_method=prefill_method,
             fixed_output_length=fixed_output_length,
+            decode_start_callback=decode_start_callback,
         )
     finally:
         self.eos_tokens = original_eos_tokens
@@ -97,12 +99,23 @@ def load_model_and_tokenizer(args):
     if str(retroinfer_root) not in sys.path:
         sys.path.insert(0, str(retroinfer_root))
 
-    from model_hub import LlamaModel, QwenModel, GlmModel
+    from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel
     
     max_len = MODEL_CONTEXT_LENGTHS[args.model]
 
+    model_path_lower = args.model_path.lower()
+
     if 'Llama' in args.model_path:
         llm = LlamaModel(
+            args.model_path,
+            max_length=max_len,
+            dtype=torch.bfloat16,
+            device_map="auto",
+            )
+    elif 'qwen3' in model_path_lower:
+        # Qwen3 uses bias-free Q/K/V projections and per-head Q/K RMSNorm;
+        # it cannot use the legacy Qwen2/Qwen2.5 adapter below.
+        llm = Qwen3Model(
             args.model_path,
             max_length=max_len,
             dtype=torch.bfloat16,

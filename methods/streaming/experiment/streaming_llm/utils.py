@@ -9,6 +9,7 @@ import ssl
 import urllib.request
 import os
 import json
+import types
 
 
 def parse_args():
@@ -67,6 +68,29 @@ def load(model_name_or_path):
             trust_remote_code=True,
             attn_implementation="flash_attention_2"
     )
+    # GLM-4-9B-Chat-1M's remote modeling code overrides
+    # _update_model_kwargs_for_generation using the pre-4.57 Transformers
+    # helper _extract_past_from_model_output. Transformers 4.57 removed that
+    # helper and inlined its logic. Restore the exact 4.46 extraction contract
+    # on this instance, rather than editing the cached remote source.
+    if not hasattr(model, "_extract_past_from_model_output"):
+        def _extract_past_from_model_output(self, outputs, standardize_cache_format=False):
+            cache_name = "past_key_values"
+            cache = None
+            if "past_key_values" in outputs:
+                cache = outputs.past_key_values
+            elif "mems" in outputs:
+                cache = outputs.mems
+            elif "past_buckets_states" in outputs:
+                cache = outputs.past_buckets_states
+            elif "cache_params" in outputs:
+                cache_name = "cache_params"
+                cache = outputs.cache_params
+            return cache_name, cache
+
+        model._extract_past_from_model_output = types.MethodType(
+            _extract_past_from_model_output, model
+        )
     if tokenizer.pad_token_id is None:
         if tokenizer.eos_token_id is not None:
             tokenizer.pad_token_id = tokenizer.eos_token_id

@@ -4,7 +4,7 @@ import torch
 
 
 def load_model_and_tokenizer(args):
-    """Load full attention via native Transformers model."""
+    """通过 Transformers 原生模型加载完整注意力。"""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     path = args.model_path

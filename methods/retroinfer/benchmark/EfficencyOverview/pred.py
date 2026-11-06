@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(PROJECT_ROOT)
-from model_hub import LlamaModel, QwenModel, GlmModel
+from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel
 # from model_hub import QwenModel, GlmModel
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -81,9 +81,18 @@ def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
             llm.tokenizer.pad_token_id = llm.eos_tokens[0]
         llm.tokenizer.padding_side = "left"
 
-        inputs = llm.tokenizer([data], return_tensors="pt", padding=True)
-        input_ids = inputs.input_ids[:, :args.input_max_token]
-        attention_masks = inputs.attention_mask[:, :args.input_max_token]
+        # Truncate while tokenizing.  Slicing after tokenization still makes
+        # Transformers validate the complete (potentially much longer) input
+        # against tokenizer.model_max_length and emit a misleading warning.
+        inputs = llm.tokenizer(
+            [data],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=args.input_max_token,
+        )
+        input_ids = inputs.input_ids
+        attention_masks = inputs.attention_mask
 
         attn_config = generate_config(
             model_name, 
@@ -112,7 +121,9 @@ def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
 
         torch.cuda.empty_cache()
                 
-        out_path = Path(out_path) / f"EfficencyOverview_{args.input_max_token}_{args.fixed_output_length}_{args.budget_ratio}_{args.estimate_ratio}_{args.budget}.jsonl"
+        output_dir = Path(out_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"EfficencyOverview_{args.input_max_token}_{args.fixed_output_length}_{args.budget_ratio}_{args.estimate_ratio}_{args.budget}.jsonl"
         pred = output[0]
         if args.benchmark == "LongBench":
             with open(out_path, "a", encoding="utf-8") as f:
@@ -159,17 +170,23 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time
+            budget=args.budget,
+            )
+    elif 'Qwen3' in model_path:
+        llm = Qwen3Model(model_path,
+            max_length=max_len + max_new_tokens,
+            dtype=dtype,
+            device_map=device,
+            RECALL=args.recall,
+            budget=args.budget,
             )
     elif 'Qwen' in model_path:
         llm = QwenModel(model_path,
             max_length=max_len + max_new_tokens,
             dtype=dtype,
             device_map=device,
-            # RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            # measure_time=args.measure_time
+            RECALL=args.recall,
+            budget=args.budget,
             )
     elif 'GLM' in model_path or 'glm' in model_path:
         llm = GlmModel(model_path,
@@ -177,8 +194,6 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time
             )
     else:
         raise ValueError(f"Unsupported model: {model_path}")

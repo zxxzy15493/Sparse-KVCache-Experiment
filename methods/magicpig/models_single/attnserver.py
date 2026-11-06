@@ -50,6 +50,9 @@ class LSHSparseAttnServer:
         self.K = K
         self.L = L
         self.config = config
+        if batch_size < 1:
+            raise ValueError("MagicPig batch_size must be positive.")
+        self.generation_buffer = generation_buffer
         self.length = num_sink_tokens + num_local_tokens + generation_buffer
         self.max_length = max_length
         self.device = device
@@ -142,8 +145,9 @@ class LSHSparseAttnServer:
         ]
 
     def alloc_buffer(self, seq_len:int):
-        self.sorted_hash_values_buffer =  torch.zeros((self.num_key_value_heads, self.L, seq_len - self.num_sink_tokens - self.num_local_tokens), dtype=torch.int16, device="cpu").pin_memory()
-        self.sorted_hash_indices_buffer =  torch.zeros((self.num_key_value_heads, self.L, seq_len - self.num_sink_tokens - self.num_local_tokens), dtype=torch.int32, device="cpu").pin_memory()
+        offload_len = max(0, seq_len - self.num_sink_tokens - self.num_local_tokens)
+        self.sorted_hash_values_buffer = torch.zeros((self.num_key_value_heads, self.L, offload_len), dtype=torch.int16, device="cpu").pin_memory()
+        self.sorted_hash_indices_buffer = torch.zeros((self.num_key_value_heads, self.L, offload_len), dtype=torch.int32, device="cpu").pin_memory()
         
     def fill(self, 
         layer_idx:int,
@@ -154,28 +158,31 @@ class LSHSparseAttnServer:
         
          
         if layer_idx in self.dense_layers:
-            self.flashinfer_kv_cache[layer_idx][request_id][0].copy_(key_cache.transpose(0,1))
-            self.flashinfer_kv_cache[layer_idx][request_id][1].copy_(value_cache.transpose(0,1))
+            self.flashinfer_kv_cache[layer_idx][request_id][0][:, :seq_len].copy_(key_cache[:seq_len].transpose(0,1))
+            self.flashinfer_kv_cache[layer_idx][request_id][1][:, :seq_len].copy_(value_cache[:seq_len].transpose(0,1))
             self.dense_kv_last_page_len[request_id] = seq_len
         else:
            
-            sink_tokens_key = key_cache[:self.num_sink_tokens]
-            sink_tokens_value = value_cache[:self.num_sink_tokens]
+            sink_len = min(self.num_sink_tokens, seq_len)
+            local_start = max(sink_len, seq_len - self.num_local_tokens)
+            sink_tokens_key = key_cache[:sink_len]
+            sink_tokens_value = value_cache[:sink_len]
             
-            local_tokens_key = key_cache[seq_len-self.num_local_tokens:seq_len]
-            local_tokens_value = value_cache[seq_len-self.num_local_tokens:seq_len]
+            local_tokens_key = key_cache[local_start:seq_len]
+            local_tokens_value = value_cache[local_start:seq_len]
             
             key = torch.cat([sink_tokens_key, local_tokens_key], dim=0).transpose(0,1)
             value = torch.cat([sink_tokens_value, local_tokens_value], dim=0).transpose(0,1)
             
-            offload_key = key_cache[self.num_sink_tokens: seq_len-self.num_local_tokens]
-            offload_value = value_cache[self.num_sink_tokens: seq_len-self.num_local_tokens]
+            offload_key = key_cache[sink_len:local_start]
+            offload_value = value_cache[sink_len:local_start]
             
             # offload_key.shape --> (head_num,  offload_len, head_dim)
             offload_key = offload_key.transpose(0,1).contiguous()
             offload_value = offload_value.transpose(0,1).contiguous()
             
-            avg_k = offload_key.mean(dim=1, keepdim=True)
+            avg_k = (offload_key.mean(dim=1, keepdim=True) if offload_key.shape[1]
+                     else torch.zeros_like(key[:, :1]))
             
             key = key - avg_k
             offload_key = offload_key - avg_k
@@ -184,13 +191,16 @@ class LSHSparseAttnServer:
             
             self.avg_k[layer_idx][request_id] = avg_k
             
-            self.flashinfer_kv_cache[layer_idx][request_id][0][...,:self.num_sink_tokens + self.num_local_tokens,:].copy_(key)
-            self.flashinfer_kv_cache[layer_idx][request_id][1][...,:self.num_sink_tokens + self.num_local_tokens,:].copy_(value)
+            resident_len = key.shape[1]
+            self.flashinfer_kv_cache[layer_idx][request_id][0][..., :resident_len, :].copy_(key)
+            self.flashinfer_kv_cache[layer_idx][request_id][1][..., :resident_len, :].copy_(value)
             
-            self.kv_last_page_len[request_id] = (self.num_sink_tokens + self.num_local_tokens)
+            self.kv_last_page_len[request_id] = resident_len
             
             #shape --> (head_num, seq_len - num_sink - num_local, head_dim)
             offload_len = offload_key.shape[1]
+            if offload_len == 0:
+                return
             num_iter = (offload_len // self.chunk_size) if (not offload_len % self.chunk_size) else (offload_len // self.chunk_size + 1)
             
             for i in range(num_iter):
@@ -219,7 +229,7 @@ class LSHSparseAttnServer:
         request_id: int,
         seq_len:int):
         
-        if layer_idx not in self.dense_layers:
+        if layer_idx not in self.dense_layers and seq_len > self.num_sink_tokens + self.num_local_tokens:
             offload_len = seq_len - self.num_sink_tokens - self.num_local_tokens
             for i in range(self.num_key_value_heads):
                 # hash_code_buffer shape --> (num_key_value_heads, L, offload_len)
@@ -330,10 +340,14 @@ class LSHSparseAttnServer:
             self.lsh_retriever.batch_retrieve_count(layer_idx, self.pinned_hashcode, self.results_lsh_cpu, self.nnz, self.hits_lsh_cpu)
             
             
-            self.avg_nnz += (self.nnz.sum() / self.num_attention_heads)
+            self.avg_nnz += (self.nnz.sum() / (self.batch_size * self.num_attention_heads))
             self.count_nnz += 1
 
             self.attn_server.attention(layer_idx, self.K, self.L, self.output, self.max_value_expsum, self.pinned_query.float(), self.pinned_query.float().norm(p=2, dim=-1), self.results_lsh_cpu, self.nnz)
+            # Requests with no offloaded/retrieved keys contribute no CPU state.
+            empty = self.nnz == 0
+            self.output[empty] = 0
+            self.max_value_expsum[1].masked_fill_(empty, float("-inf"))
             
             self.max_value_expsum_cuda.copy_(self.max_value_expsum[1], non_blocking=True)
             self.output_cuda.copy_(self.output, non_blocking=True)
@@ -350,6 +364,7 @@ class LSHSparseAttnServer:
             
     def clear(self):
         self.nnz.zero_()
+        self.hits_lsh_cpu.zero_()
         self.results_lsh_cpu.zero_()
         self.max_value_expsum.zero_()
         self.output_cuda.zero_()

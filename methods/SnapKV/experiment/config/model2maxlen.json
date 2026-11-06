@@ -14,6 +14,7 @@
     "Llama-3.1-8B-Instruct": 131072,
     "Qwen2.5-7B-Instruct": 131072,
     "Qwen2.5-7B-Instruct-1M": 131072,
+    "Qwen3-32B": 40960,
     "glm-4-9b-chat-1m": 131072,
     "lwm-text-chat-1m": 1048576,
     "lwm-text-1m": 1048576

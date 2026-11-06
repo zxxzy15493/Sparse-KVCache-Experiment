@@ -69,12 +69,30 @@ def glm_pos_shift_attention_forward(
 
 
     if kv_cache is not None:
-        cache_k, cache_v = kv_cache
-        if isinstance(kv_cache, tuple):
-            if len(cache_k.shape) == 5:
+        # ChatGLM uses a tuple(K, V) during token decoding, but packs prompt
+        # caches as [1, 2, B, H, S, D]. Depending on GenerationMixin's call
+        # path, the packed value can also be wrapped in a one-element tuple.
+        cache_payload = kv_cache
+        if isinstance(cache_payload, (tuple, list)) and len(cache_payload) == 1:
+            cache_payload = cache_payload[0]
+
+        cache_k = cache_v = None
+        if isinstance(cache_payload, (tuple, list)) and len(cache_payload) == 2:
+            cache_k, cache_v = cache_payload
+        elif torch.is_tensor(cache_payload):
+            if cache_payload.ndim >= 6 and cache_payload.shape[0] == 1 and cache_payload.shape[1] == 2:
+                cache_k, cache_v = cache_payload[0, 0], cache_payload[0, 1]
+            elif cache_payload.ndim >= 5 and cache_payload.shape[0] == 2:
+                cache_k, cache_v = cache_payload[0], cache_payload[1]
+
+        # Empty/unknown single-item wrappers are equivalent to no prior cache.
+        if cache_k is None or cache_v is None:
+            kv_cache = None
+        else:
+            if cache_k.ndim == 5:
                 cache_k, cache_v = cache_k[0], cache_v[0]
-        key_layer = torch.cat((cache_k, key_layer), dim=2)
-        value_layer = torch.cat((cache_v, value_layer), dim=2)
+            key_layer = torch.cat((cache_k, key_layer), dim=2)
+            value_layer = torch.cat((cache_v, value_layer), dim=2)
 
     key_states_compress, value_states_compress = self.kv_cache_evictor.evict_for_space(key_layer, value_layer)
 

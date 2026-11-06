@@ -15,7 +15,9 @@ LongBench=(
 )
 
 
-MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
+
+Qwen="Qwen/Qwen2.5-7B-Instruct"
+Qwen3="Qwen/Qwen3-32B"
 HEAVY_HITTER_SIZE=992
 RECENT_SIZE=32
 
@@ -25,7 +27,7 @@ for DATASET in "${LongBench[@]}"; do
     echo "$DATASET"
 
     python h2o.py \
-        --model_name_or_path "$MODEL_PATH" \
+        --model_name_or_path "$Qwen" \
         --dataset_name "$DATASET" \
         --enable_h2o_cache \
         --heavy_hitter_size "$HEAVY_HITTER_SIZE" \

@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 if [ $# -ne 6 ]; then
     echo "Usage: $0 <model> $1{prefill_method}  $2 <attn_type> $3 <budget> $4 {input_max_token} $5{fixed_output_length}"
     exit 1
@@ -27,11 +30,11 @@ LOG_DIR="./log/VRAMOverview/${MODEL}/${PREFILL_METHOD}_${ATTN_TYPE}/${INPUT_MAX_
 mkdir -p ${LOG_DIR}
 echo "Start to predict..."
 
-python -u ./pred.py \
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python -u ./pred.py \
     --prefill_method ${PREFILL_METHOD} \
     --attn_type ${ATTN_TYPE} \
     --save_dir ${RESULT_DIR} \
-    --model ${MODEL} \
+    --model_name ${MODEL} \
     --dtype bf16 \
     --device auto \
     --budget_ratio ${BUDGET_RATIO} \
@@ -43,4 +46,3 @@ python -u ./pred.py \
     ${MEASURE_TIME} \
     --fixed_output_length ${FIXED_OUTPUT_LENGTH} \
     --num_samples ${NUM_EXAMPLES}  > ${LOG_DIR}/${INPUT_MAX_TOKEN}_${FIXED_OUTPUT_LENGTH}_${BUDGET}.log 2>&1
-

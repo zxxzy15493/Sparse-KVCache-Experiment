@@ -38,6 +38,7 @@ class SnapKVCluster():
     def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups):
         assert key_states.shape[-2] == query_states.shape[-2]
         bsz, num_heads, q_len, head_dim = query_states.shape
+        padding_mask = attention_mask
         if q_len < self.max_capacity_prompt:
             return key_states, value_states
         else:
@@ -46,11 +47,19 @@ class SnapKVCluster():
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
             mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
             mask = mask.to(attn_weights.device)
-            attention_mask = mask[None, None, :, :]
+            causal_mask = mask[None, None, :, :]
 
-            attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+            attn_weights[:, :, -self.window_size:, -self.window_size:] += causal_mask
+
+            if padding_mask is not None:
+                padding_mask = padding_mask[:, -q_len:].to(torch.bool)
+                attn_weights.masked_fill_(~padding_mask[:, None, None, :], torch.finfo(attn_weights.dtype).min)
 
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_weights = torch.nan_to_num(attn_weights)
+            if padding_mask is not None:
+                query_mask = padding_mask[:, -self.window_size:].to(attn_weights.dtype)
+                attn_weights *= query_mask[:, None, :, None]
             attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
             if self.pooling == 'avgpool':
                 attn_cache = F.avg_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)

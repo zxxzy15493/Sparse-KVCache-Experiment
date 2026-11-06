@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
 if [ $# -ne 10 ]; then
     echo "Usage: $0 <model> $1 <attn_type> $2 <budget_ratio> $3 <estimate_ratio> $4 <budget> $5 <ratio_or_fixed> $6{recall} $7{measure_time} $8{fixed_output_length} $9{prefill_method}"
     exit 1
@@ -27,9 +30,8 @@ elif [ "$RATIO_OR_FIXED" -eq 0 ]; then
     RESULT_DIR="${RESULT_DIR}/Ratio/${BUDGET_RATIO}_${ESTIMATE_RATIO}"
     MODE="Ratio"
 else
-    # ， mode 
-    echo
-    echo $RATIO_OR_FIXED"
+    echo "ratio_or_fixed must be 0 (ratio) or 1 (fixed), got: ${RATIO_OR_FIXED}" >&2
+    exit 2
 fi
 
 mkdir -p ${RESULT_DIR}
@@ -51,18 +53,16 @@ echo "Start to predict..."
 
 INPUT_MAX_TOKENS=(
     4096
-    # 8192 # 8k
-    # 16384 #16k
-    # 32768 # 32k
     65536 # 64k
-    # 131072 # 128k
 )
+if [[ "$MODEL" == qwen3-* ]]; then
+    INPUT_MAX_TOKENS=(4096 8192 16384 32768 65536 131072)
+fi
 for INPUT_MAX_TOKEN in "${INPUT_MAX_TOKENS[@]}"; do
-    CUDA_VISIBLE_DEVICES=0 \
-    python -u ./pred.py \
+    if ! CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python -u ./pred.py \
         --save_dir ${RESULT_DIR} \
         --attn_type ${ATTN_TYPE} \
-        --model ${MODEL} \
+        --model_name ${MODEL} \
         --dtype bf16 \
         --device "cuda:0" \
         --benchmark "GSM8K" \
@@ -75,7 +75,9 @@ for INPUT_MAX_TOKEN in "${INPUT_MAX_TOKENS[@]}"; do
         ${MEASURE_TIME} \
         --prefill_method ${PREFILL_METHOD} \
         --fixed_output_length ${FIXED_OUTPUT_LENGTH} \
-        --num_samples ${NUM_EXAMPLES}  > ${LOG_DIR}${INPUT_MAX_TOKEN}_${FIXED_OUTPUT_LENGTH}_${BUDGET}.log 2>&1
+        --num_samples ${NUM_EXAMPLES}  > ${LOG_DIR}${INPUT_MAX_TOKEN}_${FIXED_OUTPUT_LENGTH}_${BUDGET}.log 2>&1; then
+        # A long-context OOM is a valid benchmark point; retain results from
+        # the shorter lengths and continue the sweep.
+        echo "[failed] ${MODEL} ${ATTN_TYPE} at ${INPUT_MAX_TOKEN} tokens" >&2
+    fi
 done
-
-

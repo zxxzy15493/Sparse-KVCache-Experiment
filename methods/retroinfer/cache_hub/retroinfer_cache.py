@@ -55,6 +55,7 @@ class retroinfer_cache(KV_Cache):
         model_size: int,
         RECALL: bool = False,
         budget: int = 128,
+        buffer_multiplier: int = 4,
     ) -> None:
         super().__init__(layer_num, batch_size, max_length, num_key_value_heads, num_heads, head_dim, dtype, layer_mapping, num_gpus, model_size)
         # for recall
@@ -130,8 +131,10 @@ class retroinfer_cache(KV_Cache):
         avg_cluster_size = (self.input_length - self.static_pattern_total) // self.n_centroids
         pages_per_cluster = math.ceil(avg_cluster_size / self.page_size)
         self.cache_size = cache_cluster_num * pages_per_cluster
-        # enlarge these values may solve warning and error when decoding
-        self.buffer_size = max(int(self.nprobe * 4), 16) * pages_per_cluster
+        # The temporary decode buffer must hold every retrieved page.  Keep
+        # the historical multiplier by default, while allowing model-specific
+        # profiles to reserve more space for skewed cluster assignments.
+        self.buffer_size = max(int(self.nprobe * buffer_multiplier), 16) * pages_per_cluster
 
         # whether to pre-allocate GPU buffer and cache before prefilling
         self.allocated = self.pre_allocate_decision()
@@ -757,4 +760,3 @@ class retroinfer_cache(KV_Cache):
                                 self.buffer_size, static_len)
 
         return attn_out.view(self.batch_size, 1, self.num_heads, self.head_dim)
-

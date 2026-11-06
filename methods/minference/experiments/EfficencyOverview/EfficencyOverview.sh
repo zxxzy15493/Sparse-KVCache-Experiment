@@ -1,4 +1,4 @@
-
+set -euo pipefail
 
 
 MODEL_NAME=${1}
@@ -22,14 +22,26 @@ case $MODEL_NAME in
         MODEL_PATH="Qwen/Qwen2.5-7B-Instruct"
         MODEL_TEMPLATE_TYPE="qwen2.5"
         ;;
+    qwen3-4b)
+        MODEL_PATH="Qwen/Qwen3-4B"
+        MODEL_TEMPLATE_TYPE="qwen3"
+        ;;
+    qwen3-32b)
+        MODEL_PATH="Qwen/Qwen3-32B"
+        MODEL_TEMPLATE_TYPE="qwen3"
+        ;;
     glm-4-9b-chat-1m)
         MODEL_PATH="THUDM/glm-4-9b-chat-1m"
         MODEL_TEMPLATE_TYPE="glm-4"
         ;;
+    *)
+        echo "Unsupported model: ${MODEL_NAME}" >&2
+        exit 1
+        ;;
 esac
 
 
-python ./call_api.py \
+python ./pred.py \
     --save_dir ${RESULTS_DIR} \
     --model_name ${MODEL_PATH} \
     --warmup ${warmup} \

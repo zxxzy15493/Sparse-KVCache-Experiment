@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(PROJECT_ROOT)
-from model_hub import LlamaModel, QwenModel, GlmModel
+from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import generate_config, parse_attn_args
@@ -35,6 +35,25 @@ TASKS = {
     'fwe': 50,
     'qa': 32
 }
+
+
+def reset_peak_memory_stats():
+    """Reset peaks on every visible GPU, not just the current device."""
+    for device_idx in range(torch.cuda.device_count()):
+        torch.cuda.reset_peak_memory_stats(device_idx)
+
+
+def collect_peak_memory_mib():
+    """Return per-GPU and maximum peak allocation/reservation in MiB."""
+    allocated = {
+        f"cuda:{device_idx}": torch.cuda.max_memory_allocated(device_idx) / (1024 * 1024)
+        for device_idx in range(torch.cuda.device_count())
+    }
+    reserved = {
+        f"cuda:{device_idx}": torch.cuda.max_memory_reserved(device_idx) / (1024 * 1024)
+        for device_idx in range(torch.cuda.device_count())
+    }
+    return allocated, reserved, max(allocated.values(), default=0.0), max(reserved.values(), default=0.0)
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
@@ -68,7 +87,7 @@ def load_dataset(args):
 
 def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
         
-        torch.cuda.memory.reset_peak_memory_stats()
+        reset_peak_memory_stats()
         torch.cuda.memory._record_memory_history()
 
         if llm.tokenizer.eos_token is not None:
@@ -77,9 +96,23 @@ def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
             llm.tokenizer.pad_token_id = llm.eos_tokens[0]
         llm.tokenizer.padding_side = "left"
 
-        inputs = llm.tokenizer([data], return_tensors="pt", padding=True)
-        input_ids = inputs.input_ids[:, :args.input_max_token]
-        attention_masks = inputs.attention_mask[:, :args.input_max_token]
+        # Encode only the requested benchmark length.  Tokenizing the complete
+        # source prompt first can exceed tokenizer.model_max_length even though
+        # the tensor is sliced afterwards.
+        inputs = llm.tokenizer(
+            [data],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=args.input_max_token,
+        )
+        input_ids = inputs.input_ids
+        attention_masks = inputs.attention_mask
+        if input_ids.shape[1] != args.input_max_token:
+            raise ValueError(
+                f"The VRAM prompt has {input_ids.shape[1]} tokens, but "
+                f"{args.input_max_token} were requested. Extend benchmarks/myinput.txt."
+            )
         print("="*80)
         print("="*80)
         attn_config = generate_config(
@@ -107,12 +140,15 @@ def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
         
         output = llm.tokenizer.batch_decode(out, skip_special_tokens=True)
 
-        peak_alloc = torch.cuda.memory.max_memory_allocated() / (1024 * 1024)
-        peak_reserved = torch.cuda.memory.max_memory_reserved() / (1024 * 1024) # allocator 
+        peak_alloc_by_device, peak_reserved_by_device, peak_alloc, peak_reserved = (
+            collect_peak_memory_mib()
+        )
 
         torch.cuda.empty_cache()
                 
-        out_path = Path(out_path) / f"VRAMOverview_{args.input_max_token}_{args.fixed_output_length}_{args.budget}.jsonl"
+        output_dir = Path(out_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"VRAMOverview_{args.input_max_token}_{args.fixed_output_length}_{args.budget}.jsonl"
         pred = output[0]
 
         with open(out_path, "a", encoding="utf-8") as f:
@@ -120,6 +156,8 @@ def get_pred(llm, data, max_new_tokens, model_name, out_path, args):
                 {   
                     "peak_alloc": peak_alloc,
                     "peak_reserved": peak_reserved,
+                    "peak_alloc_by_device": peak_alloc_by_device,
+                    "peak_reserved_by_device": peak_reserved_by_device,
                     "pred": pred, 
                 }, 
                 f, 
@@ -144,17 +182,23 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time
+            budget=args.budget,
+            )
+    elif 'Qwen3' in model_path:
+        llm = Qwen3Model(model_path,
+            max_length=max_len + max_new_tokens,
+            dtype=dtype,
+            device_map=device,
+            RECALL=args.recall,
+            budget=args.budget,
             )
     elif 'Qwen' in model_path:
         llm = QwenModel(model_path,
             max_length=max_len + max_new_tokens,
             dtype=dtype,
             device_map=device,
-            # RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            # measure_time=args.measure_time
+            RECALL=args.recall,
+            budget=args.budget,
             )
     elif 'GLM' in model_path or 'glm' in model_path:
         llm = GlmModel(model_path,
@@ -162,8 +206,6 @@ def load_model(model_path, max_len, dtype, device, max_new_tokens, args):
             dtype=dtype,
             device_map=device,
             RECALL=args.recall,
-            fixed_output_length=args.fixed_output_length,
-            measure_time=args.measure_time
             )
     else:
         raise ValueError(f"Unsupported model: {model_path}")
@@ -189,7 +231,7 @@ if __name__ == '__main__':
 
     model_path = model2path[model_name]
     max_new_tokens = args.fixed_output_length
-    max_length = args.input_max_token + max_new_tokens
+    max_length = args.input_max_token
 
     ##  max_length >= input_token_length + max_new_tokens
     ##  max_new_tokens token

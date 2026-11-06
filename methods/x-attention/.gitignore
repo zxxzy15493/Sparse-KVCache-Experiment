@@ -404,3 +404,10 @@ eval/VLMEvalKit/vlmeval/gemini_tmp.py
 eval/VLMEvalKit/outputs_*
 
 
+threshold/threshold/qwen3_32b_yarn4_128k_p85_s16_parts/
+threshold/threshold/qwen3_32b_yarn4_128k_p90_s16_parts/
+threshold/threshold/qwen3_32b_yarn4_128k_p95_s16_parts/
+
+threshold/*.json
+
+threshold/*.json

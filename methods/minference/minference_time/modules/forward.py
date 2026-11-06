@@ -16,6 +16,12 @@ from ..modules.minference_forward import minference_prefill_forward
 from ..TimeManager import time_manager, full_time_manager
 
 
+def _record_event(events, index):
+    """Record a timing event when timing has been initialized."""
+    if events is not None:
+        events[index].record()
+
+
 def attn_forward(
     self,
     hidden_states: torch.Tensor,
@@ -107,6 +113,98 @@ def attn_forward(
     return attn_output, attn_weights, past_key_value
 
 
+def Qwen3_attn_forward(
+    self,
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.LongTensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    output_attentions: bool = False,
+    use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    past_key_value: Cache = None,
+    past_key_values: Optional[Cache] = None,
+    best_pattern=None,
+    **kwargs,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    """Timed MInference forward for dense Qwen3 attention layers.
+
+    Qwen3 applies Q/K RMSNorm after projection reshape and before RoPE.  It
+    also uses the modern ``past_key_values`` cache keyword in Transformers.
+    """
+    if past_key_values is not None:
+        past_key_value = past_key_values
+    output_attentions = False
+
+    bsz, q_len, _ = hidden_states.size()
+    self.num_heads = getattr(self, "num_heads", self.config.num_attention_heads)
+    self.num_key_value_heads = getattr(
+        self, "num_key_value_heads",
+        getattr(self.config, "num_key_value_heads", self.num_heads),
+    )
+    self.num_key_value_groups = getattr(
+        self, "num_key_value_groups", self.num_heads // self.num_key_value_heads
+    )
+
+    query_states = self.q_proj(hidden_states)
+    key_states = self.k_proj(hidden_states)
+    value_states = self.v_proj(hidden_states)
+    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    query_states = self.q_norm(query_states)
+    key_states = self.k_norm(key_states)
+    if attention_mask is not None and attention_mask.device != query_states.device:
+        attention_mask = attention_mask.to(query_states.device)
+
+    if position_embeddings is None:
+        cos, sin = self.rotary_emb(value_states, position_ids)
+    else:
+        cos, sin = position_embeddings
+    if cos.device != query_states.device:
+        cos = cos.to(query_states.device)
+        sin = sin.to(query_states.device)
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+    event_index = time_manager.decode_step * time_manager.num_layers + self.layer_idx
+    _record_event(time_manager.forward_pre_ffn_end_event, event_index)
+    _record_event(time_manager.write_kv_start_event, event_index)
+    is_prefill = past_key_value is None or past_key_value.get_seq_length(self.layer_idx) == 0
+    if past_key_value is not None:
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+    _record_event(time_manager.write_kv_end_event, event_index)
+
+    dropout_rate = self.attention_dropout if self.training else 0.0
+    _record_event(time_manager.forward_attn_start_event, event_index)
+    if is_prefill:
+        attn_output = minference_prefill_forward(
+            query_states, key_states, value_states, self.layer_idx, best_pattern
+        ).transpose(1, 2).contiguous()
+    else:
+        attn_output = _flash_attention_forward(
+            query_states.transpose(1, 2),
+            key_states.transpose(1, 2),
+            value_states.transpose(1, 2),
+            attention_mask,
+            q_len,
+            position_ids=position_ids,
+            dropout=dropout_rate,
+            sliding_window=getattr(self, "sliding_window", None),
+            is_causal=self.is_causal,
+        )
+    _record_event(time_manager.forward_attn_end_event, event_index)
+
+    _record_event(time_manager.forward_post_ffn_start_event, event_index)
+    assert attn_output.size(1) == q_len
+    attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
+    attn_output = self.o_proj(attn_output)
+    return attn_output, None, past_key_value
+
+
 def LlamaDecoderLayer_forward(
         self,
         hidden_states: torch.Tensor,
@@ -162,20 +260,16 @@ def LlamaDecoderLayer_forward(
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
         time_manager.forward_post_ffn_end_event[time_manager.decode_step * self.num_layers + self.layer_idx].record()
 
         if self.layer_idx == self.num_layers - 1:
             time_manager.decode_step += 1
 
-        return outputs
+        # Transformers 4.57 updates cache objects in place and expects a
+        # hidden-state tensor unless attention weights were requested.
+        if output_attentions:
+            return hidden_states, self_attn_weights
+        return hidden_states
 
 
 def full_attn_forward(
