@@ -120,13 +120,6 @@ def Qwen2AttentionPatch(attn: Qwen2Attention, config, idx):
                 # begin = time.perf_counter()
                 attn_output, _ = self.kvcache_quantizer.prefill_attn(query_states, (key_states, value_states))
                 
-                if past_key_values is not None:
-                    prefill_cache_kwargs = dict(cache_kwargs)
-                    if cache_position is not None:
-                        prefill_cache_kwargs["cache_position"] = cache_position[:1]
-                    _, _ = past_key_values.update(
-                        key_states[..., :1].clone(), value_states[..., :1].clone(), self.layer_idx, prefill_cache_kwargs
-                    )
                 # end = time.perf_counter()
                 # print(f"prefill time {end - begin }, layer id {self.layer_idx}",flush=True)
             else:

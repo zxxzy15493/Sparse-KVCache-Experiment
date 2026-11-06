@@ -7,7 +7,7 @@ name = "sparq"
 version = "0.0.1"
 
 dependencies = [
-    
+    "transformers==4.57.1",
 ]
 
 [tool.setuptools.packages.find]

@@ -136,7 +136,7 @@ def run_generation(model, input_ids: torch.Tensor, max_new_tokens: int):
       input_ids=current_input_ids,
       past_key_values=past_key_values,
       use_cache=True,
-      num_logits_to_keep=1,
+      logits_to_keep=1,
     )
     past_key_values = outputs.past_key_values
     current_input_ids = torch.argmax(outputs.logits[:, -1, :], dim=-1, keepdim=True)

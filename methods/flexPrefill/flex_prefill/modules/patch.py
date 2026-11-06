@@ -151,6 +151,12 @@ def patch_llama_attention(model: PreTrainedModel, pattern: str):
       m.hidden_size = getattr(m, "hidden_size", m.config.hidden_size)
       m.forward = types.MethodType(new_forward_func, m)
 
+  # Transformers 4.57's native CausalLM and MLP forwards already provide the
+  # correct cache, loss, logits, and generation contracts.  FlexPrefill only
+  # needs to replace the attention module.
+  if pattern == "flex_prefill":
+    return
+
   from flex_prefill.modules.llama.causal_model_forward import (
     llama_causal_model_forward,
   )
@@ -271,8 +277,11 @@ def patch_qwen2_attention(model: PreTrainedModel, pattern: str):
       m.num_key_value_groups = getattr(m, "num_key_value_groups", m.num_heads // m.num_key_value_heads)
       m.hidden_size = getattr(m, "hidden_size", m.config.hidden_size)
       m.forward = types.MethodType(new_forward_func, m)
-    if isinstance(m, Qwen2MLP):
+    if pattern != "flex_prefill" and isinstance(m, Qwen2MLP):
       m.forward = types.MethodType(qwen2_mlp_forward, m)
+
+  if pattern == "flex_prefill":
+    return
 
   from flex_prefill.modules.qwen2.causal_model_forward import (
     qwen2_causal_model_forward,
@@ -299,6 +308,10 @@ def patch_qwen3_attention(model: PreTrainedModel, pattern: str):
 
   for module in model.modules():
     if isinstance(module, Qwen3Attention):
+      # Qwen3 hybrid models require native sliding-window semantics on local
+      # layers; FlexPrefill is attached only to global-attention layers.
+      if getattr(module, "sliding_window", None) is not None:
+        continue
       module.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
       module.num_key_value_heads = getattr(
         module, "num_key_value_heads", getattr(module.config, "num_key_value_heads", module.num_heads)
@@ -323,7 +336,11 @@ def disable_hf_flash_attention_check():
     config._attn_implementation = "flash_attention_2"
     return config
 
-  PreTrainedModel._check_and_enable_flash_attn_2 = _enable_flash_attn_2
+  # This hook existed in older Transformers releases.  In 4.57 some builds
+  # moved attention selection out of PreTrainedModel, so avoid installing a
+  # dead global monkey patch when the hook is absent.
+  if hasattr(PreTrainedModel, "_check_and_enable_flash_attn_2"):
+    PreTrainedModel._check_and_enable_flash_attn_2 = _enable_flash_attn_2
 
 
 def patch_hf_model(model: PreTrainedModel, pattern: str, cfg: dict):

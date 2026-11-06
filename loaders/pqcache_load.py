@@ -80,7 +80,7 @@ def load_model_and_tokenizer(args):
         model_class = VQQwen2ForCausalLM
         model_name = args.model
         model_kwargs = {}
-    elif args.model in {"qwen3-4b", "qwen3-8b"}:
+    elif args.model.startswith("qwen3-"):
         config = AutoConfig.from_pretrained(path)
         tokenizer = AutoTokenizer.from_pretrained(path, use_fast=True)
         model_class = VQQwen3ForCausalLM
@@ -115,9 +115,20 @@ def load_model_and_tokenizer(args):
     if method_args.compressor == "pq_search":
         config.max_seq_len = max(131072, model_context_length(args.model))
         config.cache_block_size = 128
+        context_length = getattr(args, "max_seq_length", None)
+        if context_length is not None:
+            # Reserve 1024 tokens for generation, block-aligned to avoid pre-allocating 128K for 4K tasks.
+            capacity = max(2048, int(context_length) + 1024)
+            config.max_seq_len = (
+                (capacity + config.cache_block_size - 1)
+                // config.cache_block_size
+                * config.cache_block_size
+            )
         config.global_cache_size = 4096
         config.cache_topk = 32
         initialize_objects(config, model=model_name)
+        # Shard directly onto target device, avoids holding full 32B weights alongside pinned CPU cache.
+        model_kwargs["device_map"] = {"": str(device)}
 
     model = model_class.from_pretrained(path, torch_dtype=torch.bfloat16, config=config, **model_kwargs)
     model.patch(config)

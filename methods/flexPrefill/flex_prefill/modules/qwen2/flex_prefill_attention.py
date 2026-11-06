@@ -53,19 +53,15 @@ from flex_prefill.ops.flex_prefill_attention import flex_prefill_attention
 def qwen2_flex_prefill_attention_forward(
   self,
   hidden_states: torch.Tensor,
-  attention_mask: Optional[torch.Tensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value: Optional[Cache] = None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
-  cache_position: Optional[torch.LongTensor] = None,
   position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+  attention_mask: Optional[torch.Tensor] = None,
   past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
-):
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
 
-  if past_key_values is not None:
-    past_key_value = past_key_values
+  past_key_values = kwargs.pop("past_key_value", past_key_values)
+  position_ids = kwargs.pop("position_ids", None)
 
   if "padding_mask" in kwargs:
     warnings.warn(
@@ -94,30 +90,22 @@ def qwen2_flex_prefill_attention_forward(
     query_states = self.q_norm(query_states)
     key_states = self.k_norm(key_states)
 
-  kv_seq_len = key_states.shape[-2]
-  if past_key_value is not None:
+  if past_key_values is not None:
     if self.layer_idx is None:
       raise ValueError(
-        f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
-        "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
-        "with a layer index."
+        "Qwen attention needs layer_idx set when using the KV cache."
       )
 
-    if hasattr(past_key_value, "get_usable_length"):
-      kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-    else:
-      kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
-
-
-
-  if position_embeddings is not None:
-    cos, sin = position_embeddings
-  else:
-    rotary_seq_len = max(kv_seq_len, position_ids[:, -1].max().item()) + 1
-    cos, sin = get_qwen2_rope_cos_sin(
-      self.rotary_emb, value_states, position_ids, rotary_seq_len
+  if position_embeddings is None:
+    raise ValueError(
+      "Qwen FlexPrefill requires position_embeddings from Transformers 4.57"
     )
+  cos, sin = position_embeddings
 
+  if cos.device != query_states.device:
+    cos = cos.to(query_states.device)
+  if sin.device != query_states.device:
+    sin = sin.to(query_states.device)
 
   query_states, key_states = apply_rotary_pos_emb(
     query_states, key_states, cos, sin, position_ids
@@ -127,37 +115,9 @@ def qwen2_flex_prefill_attention_forward(
 
   #   )
 
-  if past_key_value is not None:
-    cache_has_contents = past_key_value.get_seq_length(self.layer_idx) > 0
-    if (
-      getattr(self.config, "sliding_window", None) is not None
-      and kv_seq_len > self.config.sliding_window
-      and cache_has_contents
-    ):
-      slicing_tokens = 1 - self.config.sliding_window
-
-
-      past_key = past_key_value[self.layer_idx][0]
-      past_value = past_key_value[self.layer_idx][1]
-
-      past_key = past_key[:, :, slicing_tokens:, :].contiguous()
-      past_value = past_value[:, :, slicing_tokens:, :].contiguous()
-
-      if past_key.shape[-2] != self.config.sliding_window - 1:
-        raise ValueError(
-          f"past key must have a shape of (`batch_size, num_heads, self.config.sliding_window-1, head_dim`), got"
-          f" {past_key.shape}"
-        )
-
-      if attention_mask is not None:
-        attention_mask = attention_mask[:, slicing_tokens:]
-        attention_mask = torch.cat(
-          [attention_mask, torch.ones_like(attention_mask[:, -1:])], dim=-1
-        )
-
-
+  if past_key_values is not None:
     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-    key_states, value_states = past_key_value.update(
+    key_states, value_states = past_key_values.update(
       key_states, value_states, self.layer_idx, cache_kwargs
     )
 
@@ -204,14 +164,12 @@ def qwen2_flex_prefill_attention_forward(
     type=getattr(self.config, "type", None),
     save_path=getattr(self.config, "save_path", None),
     sample_id=getattr(self.config, "sample_id", ""),
+    attention_mask=attention_mask,
 
   )
 
 
-  attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+  attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features).contiguous()
   attn_output = self.o_proj(attn_output)
 
-  if not output_attentions:
-    attn_weights = None
-
-  return attn_output, attn_weights
+  return attn_output, None

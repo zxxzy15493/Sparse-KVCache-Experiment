@@ -72,7 +72,7 @@ def load_model_and_tokenizer(args):
     model = AutoModelForCausalLM.from_pretrained(
         path,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         device_map="auto",
         attn_implementation="flash_attention_2",
@@ -85,7 +85,12 @@ def load_model_and_tokenizer(args):
         score=method_args.score,
         reallocate_to_mean_value=method_args.reallocate_to_mean_value,
     )
-    model = SparsityMethods.apply(sparq, model).to(device).eval()
+    model = SparsityMethods.apply(sparq, model)
+    # Keep Accelerate's multi-device dispatch intact.  A single-device model
+    # still follows SparQ's original explicit placement path.
+    if len(set(getattr(model, "hf_device_map", {}).values())) <= 1:
+        model = model.to(device)
+    model = model.eval()
 
     args._method_args = method_args
     args._cleanup = None

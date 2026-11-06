@@ -139,6 +139,7 @@ def parse_args(args=None):
         default=None,
         help="Override per-layer threshold. If None, uses pre-computed per-layer values.",
     )
+    parser.add_argument("--p", type=float, default=0.9, choices=[0.8, 0.85, 0.9, 0.95])
 
     return parser.parse_args(args)
 
@@ -212,6 +213,8 @@ def get_pred(llm, message, data, tokenizer, out_path, args):
 def _patch_model_with_xattn(model, args):
     """Patch every self_attn layer to use xattention's forward_eval."""
     fastprefillconfig = FastPrefillConfig(
+        p=args.p,
+        model_type=model.config.model_type,
         stride=args.stride,
         metric="xattn",
         threshold=args.threshold if args.threshold is not None else None,

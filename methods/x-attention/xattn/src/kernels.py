@@ -249,42 +249,46 @@ def softmax_fuse_block_sum(attn_weights_slice, reshaped_block_size, segment_size
 
   grid = (q_len // reshaped_block_size, num_heads, batch_size)
 
-  if is_causal:
-    softmax_fuse_block_sum_kernel_causal[grid](
-      attn_weights_slice,
-      output,
-      scale,
-      attn_weights_slice.stride(0),
-      attn_weights_slice.stride(1),
-      attn_weights_slice.stride(2),
-      output.stride(0),
-      output.stride(1),
-      output.stride(2),
-      real_q_len,
-      k_len,
-      chunk_start,
-      chunk_end,
-      segment_size,
-      reshaped_block_size,
-    )
-  else:
-    softmax_fuse_block_sum_kernel_non_causal[grid](
-      attn_weights_slice,
-      output,
-      scale,
-      attn_weights_slice.stride(0),
-      attn_weights_slice.stride(1),
-      attn_weights_slice.stride(2),
-      output.stride(0),
-      output.stride(1),
-      output.stride(2),
-      real_q_len,
-      k_len,
-      chunk_start,
-      chunk_end,
-      segment_size,
-      reshaped_block_size,
-    )
+  # Triton launches on the current CUDA device/stream, which may differ from
+  # the layer's device after Accelerate dispatch. Peer access alone does not
+  # synchronize a launch with PyTorch producers/consumers on the owning GPU.
+  with torch.cuda.device(attn_weights_slice.device):
+    if is_causal:
+      softmax_fuse_block_sum_kernel_causal[grid](
+        attn_weights_slice,
+        output,
+        scale,
+        attn_weights_slice.stride(0),
+        attn_weights_slice.stride(1),
+        attn_weights_slice.stride(2),
+        output.stride(0),
+        output.stride(1),
+        output.stride(2),
+        real_q_len,
+        k_len,
+        chunk_start,
+        chunk_end,
+        segment_size,
+        reshaped_block_size,
+      )
+    else:
+      softmax_fuse_block_sum_kernel_non_causal[grid](
+        attn_weights_slice,
+        output,
+        scale,
+        attn_weights_slice.stride(0),
+        attn_weights_slice.stride(1),
+        attn_weights_slice.stride(2),
+        output.stride(0),
+        output.stride(1),
+        output.stride(2),
+        real_q_len,
+        k_len,
+        chunk_start,
+        chunk_end,
+        segment_size,
+        reshaped_block_size,
+      )
 
   return output
 
@@ -298,27 +302,28 @@ def flat_group_gemm(query_states, key_states, chunk_start, chunk_end):
   BLOCK_K = 64
 
   grid = (q_len // BLOCK_M, kv_len // BLOCK_N, batch_size * num_heads)
-  flat_group_gemm_kernel[grid](
-    query_states,
-    key_states,
-    output,
-    query_states.stride(0),
-    query_states.stride(1),
-    query_states.stride(2),
-    key_states.stride(0),
-    key_states.stride(1),
-    key_states.stride(2),
-    output.stride(0),
-    output.stride(1),
-    output.stride(2),
-    chunk_start,
-    chunk_end,
-    num_heads,
-    head_dim,
-    BLOCK_M,
-    BLOCK_N,
-    BLOCK_K,
-  )
+  with torch.cuda.device(query_states.device):
+    flat_group_gemm_kernel[grid](
+      query_states,
+      key_states,
+      output,
+      query_states.stride(0),
+      query_states.stride(1),
+      query_states.stride(2),
+      key_states.stride(0),
+      key_states.stride(1),
+      key_states.stride(2),
+      output.stride(0),
+      output.stride(1),
+      output.stride(2),
+      chunk_start,
+      chunk_end,
+      num_heads,
+      head_dim,
+      BLOCK_M,
+      BLOCK_N,
+      BLOCK_K,
+    )
 
   return output
 
@@ -337,27 +342,28 @@ def flat_group_gemm_fuse_reshape(query_states, key_states, stride, chunk_start, 
   assert (kv_len % (stride * BLOCK_N) == 0)
 
   grid = (q_len // stride // BLOCK_M, kv_len // stride // BLOCK_N, batch_size * num_heads)
-  flat_group_gemm_fuse_reshape_kernel[grid](
-    query_states,
-    key_states,
-    output,
-    query_states.stride(0),
-    query_states.stride(1),
-    query_states.stride(2),
-    key_states.stride(0),
-    key_states.stride(1),
-    key_states.stride(2),
-    output.stride(0),
-    output.stride(1),
-    output.stride(2),
-    chunk_start,
-    chunk_end,
-    num_heads,
-    stride,
-    head_dim,
-    BLOCK_M,
-    BLOCK_N,
-    is_causal,
-  )
+  with torch.cuda.device(query_states.device):
+    flat_group_gemm_fuse_reshape_kernel[grid](
+      query_states,
+      key_states,
+      output,
+      query_states.stride(0),
+      query_states.stride(1),
+      query_states.stride(2),
+      key_states.stride(0),
+      key_states.stride(1),
+      key_states.stride(2),
+      output.stride(0),
+      output.stride(1),
+      output.stride(2),
+      chunk_start,
+      chunk_end,
+      num_heads,
+      stride,
+      head_dim,
+      BLOCK_M,
+      BLOCK_N,
+      is_causal,
+    )
 
   return output

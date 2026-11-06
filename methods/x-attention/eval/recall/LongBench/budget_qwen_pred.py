@@ -21,6 +21,7 @@ import torch.nn as nn
 from pathlib import Path
 import math
 from xattn.src.Xattention_recall import Xattention_prefill
+from xattn.src.load_qwen import FastPrefillConfig, _layer_threshold
 from flash_attn import flash_attn_func
 import types
 
@@ -37,6 +38,7 @@ def parse_args(args=None):
   parser.add_argument("--method", type=str, default="xattn", choices=["xattn", "full"])
   parser.add_argument("--stride", type=int, default=16)
   parser.add_argument("--budget", type=float, default=0.9)
+  parser.add_argument("--threshold", type=float, default=None)
   parser.add_argument("--type", type=str, default="")
   parser.add_argument("--save_path", type=str, default=" ")
   parser.add_argument("--longbench_dir", type=str, default="../../benchmarks/Longbench_recall")
@@ -310,16 +312,10 @@ if __name__ == "__main__":
 
   model, tokenizer, eos_token_ids = load_model_and_tokenizer(args.model_path)
 
-  if args.budget == 0.9:
-    from qwen0_90_ratio import max as threshold_data
-  elif args.budget == 0.8:
-    from qwen0_8_ratio import max as threshold_data
-  elif args.budget == 0.85:
-    from qwen0_85_ratio import max as threshold_data
-  elif args.budget == 0.95:
-    from qwen0_95_ratio import max as threshold_data
-  else:
-    from qwen0_90_ratio import max as threshold_data
+  if args.method == "xattn":
+    fastprefillconfig = FastPrefillConfig(
+      p=args.budget, threshold=args.threshold, model_type=model.config.model_type
+    )
 
   for name, module in model.named_modules():
     if name.split(".")[-1] == "self_attn":
@@ -331,7 +327,9 @@ if __name__ == "__main__":
       module.task = args.task
       module.save_path = args.save_path
       if args.method == "xattn":
-        module.threshold = torch.tensor(threshold_data[layer_idx])
+        module.threshold = _layer_threshold(
+          fastprefillconfig, layer_idx, model.config.num_attention_heads, torch.device("cpu")
+        )
       module.forward = types.MethodType(new_attention_forward, module)
 
   max_length = args.max_context_len

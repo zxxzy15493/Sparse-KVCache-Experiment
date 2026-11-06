@@ -5,17 +5,26 @@ import pickle
 import math
 
 import torch
-import flashinfer
+try:
+  import flashinfer
+except (ImportError, OSError):
+  flashinfer = None
 try:
   from flash_attn import flash_attn_func
 except Exception:
   flash_attn_func = None
-from transformers import AutoTokenizer, StaticCache
+from transformers import AutoModelForCausalLM, AutoTokenizer, StaticCache
 from transformers.cache_utils import Cache
 from transformers.utils import logging
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from threshold.threshold.qwen_threshold import qwen_fuse_16, qwen_fuse_8, qwen_fuse_4,qwen_fuse_80,qwen_fuse_85,qwen_fuse_90,qwen_fuse_95,qwen_little_80
+from threshold.threshold.qwen3_threshold import (
+  qwen3_fuse_80,
+  qwen3_fuse_85,
+  qwen3_fuse_90,
+  qwen3_fuse_95,
+)
 try:
   from xattn.src.Xattention import Xattention_prefill
 except Exception:
@@ -91,6 +100,26 @@ def dense_decode_attention(
     key_states = repeat_kv(key_states, num_key_value_groups)
     value_states = repeat_kv(value_states, num_key_value_groups)
 
+  q_len = query_states.shape[-2]
+  kv_len = key_states.shape[-2]
+  if isinstance(attention_mask, torch.Tensor) and attention_mask.dim() == 2:
+    key_mask = attention_mask[:, -kv_len:].to(query_states.device, torch.bool)
+    key_pos = torch.arange(kv_len, device=query_states.device)
+    query_pos = torch.arange(q_len, device=query_states.device) + (kv_len - q_len)
+    allowed = (key_pos[None, :] <= query_pos[:, None]) & key_mask[:, None, :]
+    attention_mask = (~allowed)[:, None].to(query_states.dtype) * torch.finfo(
+      query_states.dtype
+    ).min
+  elif isinstance(attention_mask, torch.Tensor):
+    attention_mask = attention_mask[..., :kv_len].to(query_states.device)
+  elif q_len > 1:
+    key_pos = torch.arange(kv_len, device=query_states.device)
+    query_pos = torch.arange(q_len, device=query_states.device) + (kv_len - q_len)
+    blocked = key_pos[None, :] > query_pos[:, None]
+    attention_mask = blocked[None, None].to(query_states.dtype) * torch.finfo(
+      query_states.dtype
+    ).min
+
   attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(query_states.shape[-1])
   if attention_mask is not None:
     causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
@@ -113,6 +142,7 @@ def flash_attn_decode_attention(
     flash_attn_func is None
     or not query_states.is_cuda
     or query_states.dtype not in (torch.float16, torch.bfloat16)
+    or attention_mask is not None
   ):
     return dense_decode_attention(
       query_states,
@@ -164,33 +194,42 @@ class FastPrefillConfig(dict):
 
   def __init__(
     self,
-    threshold: float = None,
+    threshold: float | torch.Tensor | list = None,
     print_detail: bool = False,
     stride: int = 16,
     metric: str = "xattn",
     p: float = 0.9,
+    model_type: str = "qwen2",
   ):
     super().__init__()
     self.print_detail = print_detail
     self.metric = metric
     self.stride = stride
     self.p = p
+    self._explicit_threshold = threshold is not None
 
-    #print(p)
-    if threshold is not None:
-      # A scalar threshold also supports models without a calibrated per-head
-      # table (for example Qwen3, which has a different layer/head layout).
+    if isinstance(threshold, torch.Tensor):
+      self.threshold = threshold.detach().to(device="cpu", dtype=torch.float32)
+    elif isinstance(threshold, (list, tuple)):
+      self.threshold = torch.tensor(threshold, dtype=torch.float32)
+    elif threshold is not None:
       self.threshold = float(threshold)
-    elif p == 0.9:
-      self.threshold = torch.tensor(qwen_fuse_90)
-    elif p == 0.85:
-      self.threshold = torch.tensor(qwen_fuse_85)
-    elif p == 0.8:
-      self.threshold = torch.tensor(qwen_fuse_80)
-    elif p == 0.95:
-      self.threshold = torch.tensor(qwen_fuse_95)
-    else:
-      raise ValueError(f"Unsupported p: {p}")
+    self.select_threshold(model_type)
+
+  def select_threshold(self, model_type: str):
+    """Select a model-specific preset unless an explicit threshold was supplied."""
+    self.model_type = model_type
+    if self._explicit_threshold:
+      return
+    tables = {
+      "qwen2": {0.8: qwen_fuse_80, 0.85: qwen_fuse_85, 0.9: qwen_fuse_90, 0.95: qwen_fuse_95},
+      "qwen3": {0.8: qwen3_fuse_80, 0.85: qwen3_fuse_85, 0.9: qwen3_fuse_90, 0.95: qwen3_fuse_95},
+    }
+    if model_type not in tables:
+      raise ValueError(f"Unsupported Qwen model_type: {model_type}")
+    if self.p not in tables[model_type]:
+      raise ValueError(f"Unsupported p: {self.p}")
+    self.threshold = torch.tensor(tables[model_type][self.p], dtype=torch.float32)
 
 
 def _layer_threshold(config: FastPrefillConfig, layer_idx: int, num_heads: int, device: torch.device):
@@ -218,15 +257,12 @@ def _layer_threshold(config: FastPrefillConfig, layer_idx: int, num_heads: int, 
 def forward_eval(
   self,
   hidden_states: torch.Tensor,
-  attention_mask: Optional[torch.Tensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value: Optional[Cache] = None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
-  cache_position: Optional[torch.LongTensor] = None,
   position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+  attention_mask: Optional[torch.Tensor] = None,
+  past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
   """
   Forward pass of the Qwen2 attention layer with optimized prefill mechanisms.
 
@@ -239,8 +275,8 @@ def forward_eval(
   Returns:
     (attn_output, None, past_key_value)
   """
-  if past_key_value is None:
-    past_key_value = kwargs.pop("past_key_values", None)
+  past_key_values = kwargs.pop("past_key_value", past_key_values)
+  position_ids = kwargs.pop("position_ids", None)
 
   if self.fastprefillconfig.print_detail:
     start_time = time.time()
@@ -267,15 +303,15 @@ def forward_eval(
     print(f"   Reshape took: {reshape_time:.6f} seconds")
 
   if position_embeddings is None:
-    logger.warning_once(
-      "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
-      "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
-      "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.46 `position_ids` will be "
-      "removed and `position_embeddings` will be mandatory."
+    raise ValueError(
+      "Qwen XAttention requires position_embeddings from Transformers 4.57"
     )
-    cos, sin = self.rotary_emb(value_states, position_ids)
-  else:
-    cos, sin = position_embeddings
+  cos, sin = position_embeddings
+
+  if cos.device != query_states.device:
+    cos = cos.to(query_states.device)
+  if sin.device != query_states.device:
+    sin = sin.to(query_states.device)
 
   query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
@@ -283,19 +319,23 @@ def forward_eval(
   if self.fastprefillconfig.print_detail:
     start_time = time.time()
 
-  if past_key_value is not None:
+  past_length = 0
+  if past_key_values is not None and hasattr(past_key_values, "get_seq_length"):
+    past_length = past_key_values.get_seq_length(self.layer_idx)
+  if past_key_values is not None:
     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-    key_states, value_states = past_key_value.update(
+    key_states, value_states = past_key_values.update(
       key_states, value_states, self.layer_idx, cache_kwargs
     )
 
-  if isinstance(past_key_value, StaticCache):
-    key_states = key_states[:, :, : min(cache_position[-1] + 1, key_states.shape[2]), :]
-    value_states = value_states[:, :, : min(cache_position[-1] + 1, value_states.shape[2]), :]
+  if isinstance(past_key_values, StaticCache) and cache_position is not None:
+    valid_length = int(cache_position[-1].item()) + 1
+    key_states = key_states[:, :, :valid_length, :]
+    value_states = value_states[:, :, :valid_length, :]
 
   _, _, k_len, _ = key_states.shape
   _, _, q_len, _ = query_states.shape
-  decoding = (q_len != k_len and q_len == 1)
+  decoding = q_len == 1 and past_length > 0
 
   if not decoding:
     key_states = repeat_kv(key_states, self.num_key_value_groups).to(query_states.device)
@@ -316,25 +356,28 @@ def forward_eval(
   if not decoding:
 
     if self.fastprefillconfig.metric == "xattn":
-      threshold = _layer_threshold(
-        self.fastprefillconfig,
-        self.layer_idx,
-        self.num_heads,
-        query_states.device,
-      )
-      modelName="Qwen"
-      layer_id = int(getattr(self, "layer_idx", -1))
-      attn_output = Xattention_prefill(
-        query_states,
-        key_states,
-        value_states,
-        stride,
-        model_name=modelName,
-        layer_id=layer_id,
-        norm=1,
-        threshold=threshold,
-        use_triton=True,
-      )
+      if not query_states.is_cuda or attention_mask is not None:
+        attn_output = dense_decode_attention(
+          query_states, key_states, value_states, attention_mask, 1
+        )
+      else:
+        threshold = _layer_threshold(
+          self.fastprefillconfig,
+          self.layer_idx,
+          self.num_heads,
+          query_states.device,
+        )
+        attn_output = Xattention_prefill(
+          query_states,
+          key_states,
+          value_states,
+          stride,
+          model_name="Qwen",
+          layer_id=int(getattr(self, "layer_idx", -1)),
+          norm=1,
+          threshold=threshold,
+          use_triton=True,
+        )
     else:
       raise ValueError(f"Unknown metric: {self.fastprefillconfig.metric}")
   else:
@@ -546,12 +589,40 @@ def forward_to_save(
   return attn_output, None
 
 
+def patch_model(model, fastprefillconfig, *, skip_sliding_window: bool = False):
+  """Attach the Transformers 4.57-compatible Qwen2/Qwen3 forward in place."""
+  fastprefillconfig.select_threshold(model.config.model_type)
+  for layer in model.model.layers:
+    attention = layer.self_attn
+    if skip_sliding_window and getattr(attention, "sliding_window", None) is not None:
+      continue
+    attention.num_heads = getattr(
+      attention, "num_heads", model.config.num_attention_heads
+    )
+    attention.num_key_value_heads = getattr(
+      attention,
+      "num_key_value_heads",
+      getattr(model.config, "num_key_value_heads", model.config.num_attention_heads),
+    )
+    attention.num_key_value_groups = getattr(
+      attention,
+      "num_key_value_groups",
+      attention.num_heads // attention.num_key_value_heads,
+    )
+    attention.hidden_size = getattr(
+      attention, "hidden_size", model.config.hidden_size
+    )
+    attention.fastprefillconfig = fastprefillconfig
+    attention.forward = forward_eval.__get__(attention, type(attention))
+  return model
+
+
 def load_model(
-  fastprefillconfig: FastPrefillConfig = FastPrefillConfig(),
+  fastprefillconfig: FastPrefillConfig = None,
   name_or_path: str = "",
 ):
   """
-  Load Qwen2 model with FastPrefill.
+  Load a Qwen2/Qwen3 model with FastPrefill.
 
   Args:
     fastprefillconfig: FastPrefillConfig instance
@@ -560,20 +631,15 @@ def load_model(
   Returns:
     (model, tokenizer)
   """
-  model = Qwen2ForCausalLM.from_pretrained(
+  if fastprefillconfig is None:
+    fastprefillconfig = FastPrefillConfig()
+  model = AutoModelForCausalLM.from_pretrained(
     name_or_path,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
+    attn_implementation="flash_attention_2",
   )
-  model.eval()
-
-  for layer in model.model.layers:
-    layer.self_attn.num_heads = getattr(layer.self_attn, "num_heads", model.config.num_attention_heads)
-    layer.self_attn.num_key_value_heads = getattr(layer.self_attn, "num_key_value_heads", getattr(model.config, "num_key_value_heads", model.config.num_attention_heads))
-    layer.self_attn.num_key_value_groups = getattr(layer.self_attn, "num_key_value_groups", layer.self_attn.num_heads // layer.self_attn.num_key_value_heads)
-    layer.self_attn.hidden_size = getattr(layer.self_attn, "hidden_size", model.config.hidden_size)
-    layer.self_attn.fastprefillconfig = fastprefillconfig
-    layer.self_attn.forward = forward_eval.__get__(layer.self_attn)
+  model = patch_model(model.eval(), fastprefillconfig)
 
   tokenizer = AutoTokenizer.from_pretrained(name_or_path)
   return model, tokenizer

@@ -21,7 +21,7 @@ from transformers.models.llama.modeling_llama import (
 
 
 
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import Cache
 from transformers.models.mistral.modeling_mistral import MistralAttention
 
 
@@ -31,7 +31,10 @@ _file_lock = threading.Lock()
 def _filter_kwargs_for_fn(fn, kwargs):
   """Keep only arguments accepted by the wrapped Transformers attention."""
   try:
-    return {key: value for key, value in kwargs.items() if key in inspect.signature(fn).parameters}
+    parameters = inspect.signature(fn).parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+      return kwargs
+    return {key: value for key, value in kwargs.items() if key in parameters}
   except Exception:
     return kwargs
 
@@ -274,16 +277,20 @@ def quest_select_token_indices_from_chunks(
 def forward(
   self,
   hidden_states: torch.Tensor,
+  position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
   attention_mask: Optional[torch.Tensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value: Optional[Tuple[torch.Tensor]] = None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
+  past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
 ):
   bsz, q_len, _ = hidden_states.size()
-  past_key_value = kwargs.get("past_key_values", past_key_value)
-  position_embeddings = kwargs.get("position_embeddings")
+  position_ids = kwargs.pop("position_ids", None)
+  output_attentions = bool(kwargs.pop("output_attentions", False))
+  use_cache = bool(kwargs.pop("use_cache", past_key_values is not None))
+  past_key_value = past_key_values
+  if past_key_value is None:
+    # Keep the singular name as a compatibility bridge for Transformers <4.57.
+    past_key_value = kwargs.pop("past_key_value", None)
 
 
 
@@ -294,8 +301,11 @@ def forward(
       hidden_states=hidden_states,
       position_embeddings=position_embeddings,
       attention_mask=attention_mask,
+      position_ids=position_ids,
       past_key_values=past_key_value,
-      cache_position=kwargs.get("cache_position"),
+      cache_position=cache_position,
+      output_attentions=output_attentions,
+      use_cache=use_cache,
     )
     outputs = self.flash_forward(**_filter_kwargs_for_fn(self.flash_forward, call_kwargs))
     return outputs[0], outputs[1]
@@ -321,10 +331,16 @@ def forward(
   # =========================
   # =========================
   if position_embeddings is None:
-    position_ids = position_ids if position_ids is not None else kwargs["cache_position"].unsqueeze(0)
+    if position_ids is None:
+      if cache_position is None:
+        raise ValueError("Quest requires position_embeddings, position_ids, or cache_position")
+      position_ids = cache_position.unsqueeze(0).expand(bsz, -1)
     cos, sin = self.rotary_emb(value_states, position_ids.to(value_states.device))
   else:
     cos, sin = position_embeddings
+
+  cos = cos.to(query_states.device)
+  sin = sin.to(query_states.device)
 
   try:
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -333,14 +349,13 @@ def forward(
 
   # =========================
   # =========================
-  if isinstance(past_key_value, DynamicCache):
-    if use_cache:
-      key_states, value_states = past_key_value.update(
-        key_states,
-        value_states,
-        layer_idx=self.layer_idx,
-        cache_kwargs={"sin": sin, "cos": cos, "cache_position": kwargs.get("cache_position")},
-      )
+  if isinstance(past_key_value, Cache):
+    key_states, value_states = past_key_value.update(
+      key_states,
+      value_states,
+      layer_idx=self.layer_idx,
+      cache_kwargs={"sin": sin, "cos": cos, "cache_position": cache_position},
+    )
   else:
     if past_key_value is not None:
       key_states = torch.cat([past_key_value[0], key_states], dim=2)
@@ -352,6 +367,18 @@ def forward(
   value_states = repeat_kv(value_states, self.num_key_value_groups)
 
   kv_seq_len = key_states.shape[-2]
+
+  # Transformers 4.57 supplies the padding mask in compact 2D form. Quest's
+  # selected-token path consumes a causal additive 4D mask.
+  if attention_mask is not None and attention_mask.dim() == 2:
+    key_mask = attention_mask[:, -kv_seq_len:].to(device=query_states.device, dtype=torch.bool)
+    query_positions = torch.arange(q_len, device=query_states.device) + (kv_seq_len - q_len)
+    key_positions = torch.arange(kv_seq_len, device=query_states.device)
+    allowed = (key_positions[None, :] <= query_positions[:, None]) & key_mask[:, None, :]
+    min_value = torch.finfo(query_states.dtype).min
+    attention_mask = (~allowed)[:, None, :, :].to(query_states.dtype) * min_value
+  elif attention_mask is not None and attention_mask.device != query_states.device:
+    attention_mask = attention_mask.to(query_states.device)
 
   if attention_mask is not None:
     if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
@@ -595,7 +622,7 @@ def forward(
     )
 
   attn_output = attn_output.transpose(1, 2).contiguous()
-  attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+  attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features)
   attn_output = self.o_proj(attn_output)
 
 
@@ -623,21 +650,12 @@ def forward(
   return attn_output, attn_weights_to_return
 
 
-global layer_id
-layer_id = 32
-
-
 def enable_quest_attention_eval(model, args):
-  for name, module in reversed(model._modules.items()):
-    if len(list(module.children())) > 0:
-      enable_quest_attention_eval(
-        module,
-        args,
-      )
-
-    global layer_id
+  """Patch Llama/Mistral attention modules using the Transformers 4.57 contract."""
+  if getattr(model.config, "_attn_implementation", None) == "sdpa":
+    raise ValueError("Quest does not support SDPA; select flash_attention_2 for native attention phases.")
+  for module in model.modules():
     if isinstance(module, (LlamaAttention, MistralAttention)):
-      layer_id -= 1
       module.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
       module.num_key_value_heads = getattr(
         module, "num_key_value_heads", getattr(module.config, "num_key_value_heads", module.num_heads)
@@ -646,14 +664,16 @@ def enable_quest_attention_eval(model, args):
         module, "num_key_value_groups", module.num_heads // module.num_key_value_heads
       )
       module.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
-      model._modules[name].layer_id = layer_id
+      module.layer_id = int(getattr(module, "layer_idx", 0))
 
-      model._modules[name].flash_forward = model._modules[name].forward
-      model._modules[name].forward = types.MethodType(
-        forward, model._modules[name]
-      )
+      if not hasattr(module, "_quest_original_forward"):
+        module._quest_original_forward = module.forward
+      module.flash_forward = module._quest_original_forward
+      module.forward = types.MethodType(forward, module)
 
-      model._modules[name].token_budget = args.token_budget
-      model._modules[name].chunk_size = args.chunk_size
-      model._modules[name].save_path = getattr(args, "save_path", None)
-      model._modules[name].task = getattr(args, "task", None)
+      module.token_budget = int(args.token_budget)
+      module.chunk_size = int(args.chunk_size)
+      module.save_path = getattr(args, "save_path", None)
+      module.task = getattr(args, "task", None)
+
+  return model

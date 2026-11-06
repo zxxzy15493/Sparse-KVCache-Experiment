@@ -7,7 +7,10 @@ from xattn.src.kernels import (
   softmax_fuse_block_sum,
   flat_group_gemm_fuse_reshape,
 )
-from block_sparse_attn import block_sparse_attn_func
+try:
+  from block_sparse_attn import block_sparse_attn_func
+except (ImportError, OSError):
+  block_sparse_attn_func = None
 
 blocks_num=[]
 
@@ -42,13 +45,11 @@ def xattn_estimate(
   offset_token_chunk_num = k_chunk_num - q_chunk_num
 
   if k_num_to_pad > 0:
-    pad_key_states = F.pad(key_states, (0, 0, 0, k_num_to_pad), value=0).to("cuda")
+    pad_key_states = F.pad(key_states, (0, 0, 0, k_num_to_pad), value=0).to(key_states.device)
   else:
     pad_key_states = key_states
   if q_num_to_pad > 0:
-    pad_query_states = F.pad(query_states, (0, 0, 0, q_num_to_pad), value=0).to(
-      "cuda"
-    )
+    pad_query_states = F.pad(query_states, (0, 0, 0, q_num_to_pad), value=0).to(query_states.device)
   else:
     pad_query_states = query_states
 
@@ -182,7 +183,7 @@ def xattn_estimate(
       attn_weights_slice = torch.matmul(
         chunked_query, 
         reshaped_key.transpose(2, 3),
-      ).to("cuda")
+      ).to(key_states.device)
 
 
       attn_weights_slice = (
@@ -249,7 +250,7 @@ def xattn_estimate(
         )
         .sum(dim=-1)
         .sum(dim=-2)
-        .to("cuda")
+        .to(key_states.device)
       )
       del chunked_query
     
@@ -681,6 +682,24 @@ def Xattention_prefill(
   batch_size, num_heads, k_len, head_dim = key_states.shape
   _, _, q_len, _ = query_states.shape
 
+  if block_sparse_attn_func is None:
+    raise RuntimeError(
+      "XAttention requires block_sparse_attn_func. Install Block-Sparse-Attention "
+      "in the active Python environment."
+    )
+
+  # Keep CPU model/API validation available when the extension is installed.
+  if not query_states.is_cuda:
+    return F.scaled_dot_product_attention(
+      query_states,
+      key_states,
+      value_states,
+      dropout_p=0.0,
+      is_causal=causal and q_len > 1,
+    )
+  if isinstance(threshold, torch.Tensor) and threshold.device != query_states.device:
+    threshold = threshold.to(query_states.device)
+
   q_block_num = (q_len + block_size - 1) // block_size
   k_block_num = (k_len + block_size - 1) // block_size
   if chunk_size is None:
@@ -745,15 +764,16 @@ def Xattention_prefill(
 
   ####################
   assert block_size == 128
-  assert batch_size == 1
-  query_states = query_states.transpose(1, 2).view(q_len, num_heads, head_dim)
-  key_states = key_states.transpose(1, 2).view(k_len, num_heads, head_dim)
-  value_states = value_states.transpose(1, 2).view(k_len, num_heads, head_dim)
+  # The CUDA API accepts packed sequences and retains the leading batch
+  # dimension of the block mask, so B samples stay in one sparse call.
+  query_states = query_states.transpose(1, 2).reshape(batch_size * q_len, num_heads, head_dim)
+  key_states = key_states.transpose(1, 2).reshape(batch_size * k_len, num_heads, head_dim)
+  value_states = value_states.transpose(1, 2).reshape(batch_size * k_len, num_heads, head_dim)
   q_cu_seq_lens = torch.tensor(
-    [0, q_len], dtype=torch.int32, device=query_states.device
+    list(range(0, (batch_size + 1) * q_len, q_len)), dtype=torch.int32, device=query_states.device
   )
   k_cu_seq_lens = torch.tensor(
-    [0, k_len], dtype=torch.int32, device=query_states.device
+    list(range(0, (batch_size + 1) * k_len, k_len)), dtype=torch.int32, device=query_states.device
   )
 
   head_mask_type = torch.tensor(

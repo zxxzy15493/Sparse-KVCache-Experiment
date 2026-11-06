@@ -13,6 +13,10 @@ def glm_flex_prefill_attention_forward(
   key_states = key_states.transpose(1, 2)
   value_states = value_states.transpose(1, 2)
   batch_size, query_length = query_states.shape[:2]
+  # The GLM remote implementation supplies its causal mask even for an
+  # unpadded single sequence.  FlexPrefill already enforces causality; retain
+  # the sparse path for B=1 and use the exact masked fallback for batched GLM.
+  kernel_attention_mask = attention_mask if batch_size > 1 else None
 
   layer_id = int(getattr(self, "layer_idx", -1))
   model_name="glm"
@@ -30,6 +34,7 @@ def glm_flex_prefill_attention_forward(
     min_budget=getattr(self.config, "flex_prefill_min_budget", None),
     max_budget=getattr(self.config, "flex_prefill_max_budget", None),
     type=getattr(self.config, "type", None),
+    attention_mask=kernel_attention_mask,
   )
 
   attn_output = attn_output.reshape(

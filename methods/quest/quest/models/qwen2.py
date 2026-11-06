@@ -403,6 +403,8 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
+    cache_position: Optional[torch.LongTensor] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
     **kwargs,
   ) -> Union[Tuple, CausalLMOutputWithPast]:
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -423,9 +425,13 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
     )
     torch.cuda.nvtx.range_push("lm_head")
     hidden_states = outputs[0]
-    num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
-    if num_logits_to_keep is not None:
-      hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+    legacy_logits_to_keep = kwargs.pop("num_logits_to_keep", None)
+    if legacy_logits_to_keep is not None and isinstance(logits_to_keep, int) and logits_to_keep == 0:
+      logits_to_keep = legacy_logits_to_keep
+    if labels is None and isinstance(logits_to_keep, int) and logits_to_keep > 0:
+      hidden_states = hidden_states[:, -logits_to_keep:, :]
+    elif labels is None and isinstance(logits_to_keep, torch.Tensor):
+      hidden_states = hidden_states[:, logits_to_keep, :]
     logits = self.lm_head(hidden_states)
     logits = logits.float()
     torch.cuda.nvtx.range_pop()

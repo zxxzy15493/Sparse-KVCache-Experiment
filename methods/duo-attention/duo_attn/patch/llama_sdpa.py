@@ -1,16 +1,17 @@
-"""DuoAttention 去专用 kernel (原生 SDPA 对照版) — LLaMA 模型。
+"""DuoAttention kernel-free variant (native SDPA comparison) — LLaMA model.
 
-与 ``llama_duo_attention_forward_one_way_reordered`` (原版) 的算法完全一致:
-full/streaming 头划分、sink+recent 窗口、tuple cache (full_KV, streaming_KV)。
-唯一区别是取消 ``flash_attn_func`` / streaming 专用算子, 改用
-原生 ``F.scaled_dot_product_attention``。
+Algorithmically identical to ``llama_duo_attention_forward_one_way_reordered``:
+same full/streaming head split, sink+recent window, tuple cache (full_KV, streaming_KV).
+The only difference is replacing ``flash_attn_func`` / streaming-specific operators
+with native ``F.scaled_dot_product_attention``.
 
-- full 头:    全因果 SDPA, k/v 为 full cache (不截断)。
-- streaming 头: 全因果 SDPA, k/v 为 streaming cache (原版已按 sink+recent 窗口截断)。
-- prefill:    整块全因果 SDPA。
+- full heads:     full-causal SDPA, k/v from full cache (no truncation).
+- streaming heads: full-causal SDPA, k/v from streaming cache (pre-truncated by sink+recent window).
+- prefill:        full-block full-causal SDPA.
 
-LLaMA 有 GQA (num_key_value_heads < num_heads), 原版 flash_attn 原生支持分组广播;
-SDPA 需要把 k/v 头扩到 query 头数 (repeat_kv), 逐元素等价。
+LLaMA uses GQA (num_key_value_heads < num_heads); the original flash_attn natively
+handles grouped broadcasting.  SDPA requires expanding k/v heads to match query
+heads (repeat_kv), producing element-wise equivalent results.
 """
 
 from typing import List, Optional, Tuple, Union
@@ -35,9 +36,9 @@ from .tuple_kv_cache import enable_tuple_kv_cache_for_llama
 
 
 def _sdpa_prepare(q, k, v, num_query_heads):
-    """把 [bsz, seq, h, dim] 转成 SDPA 的 [bsz, h, seq, dim], 并按 kv_groups 广播 k/v 头。
+    """Convert [bsz, seq, h, dim] to SDPA [bsz, h, seq, dim] layout, broadcast k/v heads by kv_groups.
 
-    num_kv_heads 必须整除 num_query_heads (GQA)。
+    num_kv_heads must evenly divide num_query_heads (GQA).
     """
     # k/v: [bsz, seq, num_kv_heads, dim]
     kv_groups = num_query_heads // k.shape[2]
@@ -48,11 +49,13 @@ def _sdpa_prepare(q, k, v, num_query_heads):
 
 
 def sdpa_attn(query_states, key_states, value_states, num_query_heads, is_causal=True):
-    """模型无关的去专用 kernel 底层: 原生 SDPA 注意力。
+    """Model-agnostic kernel-free low-level helper: native SDPA attention.
 
-    输入 q/k/v 布局为 flash 风格的 ``[bsz, seq, num_heads, dim]`` (GQA 时 k/v 头数可更少),
-    内部转成 SDPA 布局并 repeat_kv, 返回 ``[bsz, q_seq, num_query_heads, dim]``。
-    逐元素等价于 ``flash_attn_func(..., causal=True)``, 只用于消融 (多算无谓全量)。
+    Accepts q/k/v in FlashAttention-style ``[bsz, seq, num_heads, dim]`` layout
+    (fewer k/v heads for GQA), internally converts to SDPA layout with repeat_kv,
+    returns ``[bsz, q_seq, num_query_heads, dim]``.
+    Element-wise equivalent to ``flash_attn_func(..., causal=True)``; intended
+    only for ablation (extra wasted FLOPs).
     """
     q, k, v = _sdpa_prepare(query_states, key_states, value_states, num_query_heads)
     attn_output = F.scaled_dot_product_attention(
@@ -151,10 +154,10 @@ def llama_duo_attention_forward_one_way_reordered_sdpa(
     use_cache: bool = False,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    """DuoAttention 去专用 kernel 的 eval forward (原生 SDPA 对照版)。
+    """DuoAttention kernel-free eval forward (native SDPA comparison variant).
 
-    算法与 llama_duo_attention_forward_one_way_reordered 完全一致,
-    仅将 flash kernel 换成 ``F.scaled_dot_product_attention`` (全因果)。
+    Algorithm identical to llama_duo_attention_forward_one_way_reordered,
+    only replaces flash kernel with ``F.scaled_dot_product_attention`` (full-causal).
     """
     bsz, q_len, _ = hidden_states.size()
 
@@ -219,7 +222,7 @@ def llama_duo_attention_forward_one_way_reordered_sdpa(
         )
 
     if q_len == kv_seq_len:
-        # pre-filling: native SDPA (全因果)
+        # pre-filling: native SDPA (full-causal)
         q, k, v = _sdpa_prepare(query_states, key_states, value_states, self.num_heads)
         attn_output = F.scaled_dot_product_attention(
             q, k, v, dropout_p=0.0, is_causal=True
@@ -264,7 +267,7 @@ def llama_duo_attention_forward_one_way_reordered_sdpa(
 
     attn_output = self.o_proj(attn_output)
 
-    # streaming cache 窗口截断: 与原版完全一致
+    # streaming cache window truncation: identical to original
     if streaming_key_states.shape[1] > self.recent_size + self.sink_size:
         recent_key_states = streaming_key_states[:, -self.recent_size :, :, :].clone()
         streaming_key_states[
@@ -305,8 +308,8 @@ def enable_llama_duo_attention_eval_sdpa(
     sink_size,
     recent_size,
 ):
-    """去 kernel 对照版: 权重重排逻辑复用 enable_llama_duo_attention_eval,
-    仅把 forward 换成 SDPA 实现。"""
+    """Kernel-free comparison variant: weight reordering reuses enable_llama_duo_attention_eval,
+    only replaces forward with SDPA implementation."""
     enable_tuple_kv_cache_for_llama(model)
 
     device = next(model.parameters()).device

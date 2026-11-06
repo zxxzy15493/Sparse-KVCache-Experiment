@@ -2,7 +2,6 @@
 #
 
 
-import math
 import warnings
 from typing import Optional, Tuple
 
@@ -14,12 +13,7 @@ from transformers.cache_utils import Cache
 from transformers.models.llama import modeling_llama
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv
 
-try:
-  from flash_attn import flash_attn_func
-  FLASH_ATTN_AVAILABLE = True
-except ImportError:
-  flash_attn_func = None
-  FLASH_ATTN_AVAILABLE = False
+from . import flash_attention as flash_attention_backend
 
 
 class LlamaAttention(modeling_llama.LlamaAttention):
@@ -35,52 +29,16 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-    bsz, _, q_len, _ = query_states.shape
-    kv_len = key_states.shape[-2]
     dropout_p = self.attention_dropout if self.training else 0.0
-
-    if FLASH_ATTN_AVAILABLE and bsz == 1:
-      q = query_states.transpose(1, 2) # [b, q, h, d]
-      k = key_states.transpose(1, 2)  # [b, kv, h, d]
-      v = value_states.transpose(1, 2)
-      attn_output = flash_attn_func(
-        q,
-        k,
-        v,
-        dropout_p=dropout_p,
-        causal=True,
-        return_attn_probs=False,
-      ).transpose(1, 2)
-      return attn_output, None
-
-    try:
-      is_causal = attention_mask is None and q_len > 1
-      attn_output = F.scaled_dot_product_attention(
-        query_states,
-        key_states,
-        value_states,
-        attn_mask=attention_mask,
-        dropout_p=dropout_p,
-        is_causal=is_causal,
-      )
-      return attn_output, None
-    except Exception:
-      pass
-
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-    if attention_mask is None:
-      key_pos = torch.arange(kv_len, device=query_states.device)[None, :]
-      query_pos = torch.arange(q_len, device=query_states.device)[:, None] + (kv_len - q_len)
-      causal = key_pos > query_pos
-      min_value = torch.finfo(query_states.dtype).min
-      attention_mask = causal[None, None, :, :].to(dtype=query_states.dtype).masked_fill(causal[None, None, :, :], min_value)
-
-    attn_weights = attn_weights + attention_mask
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-    attn_output = torch.matmul(attn_weights, value_states)
-    return attn_output, attn_weights
+    attn_output = flash_attention_backend.flash_attention(
+      query_states.transpose(1, 2),
+      key_states.transpose(1, 2),
+      value_states.transpose(1, 2),
+      attention_mask=attention_mask,
+      dropout_p=dropout_p,
+      causal=True,
+    ).transpose(1, 2)
+    return attn_output, None
 
   # -------------------------
   # -------------------------
@@ -123,26 +81,37 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     return torch.arange(start, start + q_len, device=device, dtype=torch.long).unsqueeze(0).expand(bsz, -1)
 
   @staticmethod
-  def _expand_2d_mask_to_4d(attention_mask: Tensor, q_len: int, dtype: torch.dtype) -> Tensor:
+  def _expand_2d_mask_to_4d(
+    attention_mask: Tensor,
+    q_len: int,
+    kv_len: int,
+    dtype: torch.dtype,
+    device: torch.device,
+  ) -> Tensor:
     if attention_mask.dim() != 2:
       return attention_mask
+
+    key_mask = attention_mask[:, -kv_len:].to(device=device, dtype=torch.bool)
+    key_positions = torch.arange(kv_len, device=device)
+    query_positions = torch.arange(q_len, device=device) + (kv_len - q_len)
+    allowed = (key_positions[None, :] <= query_positions[:, None]) & key_mask[:, None, :]
     min_value = torch.finfo(dtype).min
-    expanded = (1.0 - attention_mask[:, None, None, :].to(dtype=dtype)) * min_value
-    return expanded.expand(-1, 1, q_len, -1)
+    return (~allowed)[:, None, :, :].to(dtype=dtype) * min_value
 
   def forward(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
-    output_attentions: bool = False,
-    use_cache: bool = False,
+    past_key_values: Optional[Cache] = None,
     cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, # MODIFIED: transformers 4.45+
     **kwargs,
-  ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-    past_key_value = kwargs.get("past_key_values", past_key_value)
+  ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    # Keep the singular spelling usable for direct callers while matching the
+    # Transformers 4.57 decoder contract (`past_key_values`, two return values).
+    past_key_values = kwargs.pop("past_key_value", past_key_values)
+    position_ids = kwargs.pop("position_ids", None)
+    output_attentions = bool(kwargs.pop("output_attentions", False))
     if "padding_mask" in kwargs:
       warnings.warn(
         "Passing `padding_mask` is deprecated; use `attention_mask` instead.",
@@ -176,18 +145,18 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-    past_key_value = getattr(self, "past_key_value", past_key_value)
+    past_key_values = getattr(self, "past_key_value", past_key_values)
 
     kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
+    if past_key_values is not None:
       if self.layer_idx is None:
         raise ValueError(
           "LlamaAttention needs layer_idx set when using kv cache (past_key_value is not None)."
         )
-      try:
-        kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-      except AttributeError:
-        pass
+      if hasattr(past_key_values, "get_usable_length"):
+        kv_seq_len += past_key_values.get_usable_length(kv_seq_len, self.layer_idx)
+      elif hasattr(past_key_values, "get_seq_length"):
+        kv_seq_len += past_key_values.get_seq_length(self.layer_idx)
 
     if position_embeddings is None:
       if position_ids is None:
@@ -202,17 +171,26 @@ class LlamaAttention(modeling_llama.LlamaAttention):
     else:
       cos, sin = position_embeddings
 
+    cos = cos.to(device=query_states.device)
+    sin = sin.to(device=query_states.device)
+
     query_states, key_states = self._apply_rope(query_states, key_states, cos, sin, position_ids, unsqueeze_dim=1)
 
-    if past_key_value is not None:
+    if past_key_values is not None:
       cache_kwargs = {"sin": sin, "cos": cos}
       if cache_position is not None:
         cache_kwargs["cache_position"] = cache_position
-      key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+      key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
     if isinstance(attention_mask, torch.Tensor):
-      attention_mask = self._expand_2d_mask_to_4d(attention_mask, q_len, hidden_states.dtype)
-      attention_mask = attention_mask[..., : key_states.shape[-2]]
+      attention_mask = self._expand_2d_mask_to_4d(
+        attention_mask,
+        q_len,
+        key_states.shape[-2],
+        query_states.dtype,
+        query_states.device,
+      )
+      attention_mask = attention_mask[..., : key_states.shape[-2]].to(query_states.device)
 
     attn_output, attn_weights = self._attn(query_states, key_states, value_states, attention_mask)
 
@@ -223,7 +201,7 @@ class LlamaAttention(modeling_llama.LlamaAttention):
       )
 
     attn_output = attn_output.transpose(1, 2).contiguous()
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim)
+    attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features)
 
     if self.config.pretraining_tp > 1:
       attn_output = attn_output.split(self.hidden_size // self.config.pretraining_tp, dim=2)

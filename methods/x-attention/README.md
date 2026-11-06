@@ -48,7 +48,7 @@ conda install -y nvidia/label/cuda-12.4.0::cuda-toolkit
 conda install -y nvidia::cuda-cudart-dev
 conda install -y pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
-pip install transformers==4.46 accelerate sentencepiece minference datasets wandb zstandard matplotlib huggingface_hub==0.23.2 torch torchaudio torchvision xformers  vllm==0.6.3.post1 vllm-flash-attn==2.6.1
+pip install transformers==4.57.1 accelerate sentencepiece minference datasets wandb zstandard matplotlib torch torchaudio torchvision xformers
 pip install tensor_parallel==2.0.0
 
 pip install ninja packaging
@@ -88,6 +88,23 @@ v = torch.randn((bsz,heads,seq_len,dim),dtype=torch.bfloat16).to("cuda")
 attention_output = Xattention_prefill(query_states=q,key_states=k,value_states=v,stride=16,block_size=128,use_triton=True,chunk_size=2048)
 attention_output
 ```
+
+### Qwen3 阈值校准
+
+在 `methods/x-attention` 目录、已配置好依赖的环境中续跑：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 DEVICE_MAP=balanced RESUME_CHUNKS=true \
+bash threshold/train_scripts/run_qwen3_threshold_both.sh 0.85 0.9 0.95
+```
+
+调度脚本跳过已存在且非空的最终阈值文件，并复用各个 `*_parts/` 目录中的有效分块。
+校准默认以 `MLP_CHUNK_SIZE=4096` 按 token 分块执行稠密 MLP，避免一次性生成完整长文本的
+`[batch, sequence, intermediate_size]` 激活。MLP 的计算彼此独立于其他 token，分块保留完整文本和原有阈值计算方式。
+可设置 `MLP_CHUNK_SIZE=2048` 进一步降低峰值，或设为 `0` 关闭分块。
+`HEAD_CHUNK_SIZE`（默认 4）控制同时校准的注意力头数量，`ESTIMATE_CHUNK_SIZE`（默认 16384）控制估计分块长度。
+`RESERVE_MEMORY_GIB`（默认 8）只在加载时为每张卡预留激活显存，不能阻止其他进程在运行期间增加显存占用。
+
 ## Demo
 After setting up the environment, you can run the following script to execute Xattention demo on the `gradientai/Llama-3-8B-Instruct-Gradient-1048k` model. The demo is designed to run on a single A100 GPU and supports a context length of up to 4.3 million tokens.
 

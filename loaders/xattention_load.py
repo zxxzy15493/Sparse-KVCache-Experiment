@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -15,6 +16,7 @@ def _build_method_args(args) -> Namespace:
         model_name=getattr(args, "model_name", args.model),
         stride=16,
         threshold=None,
+        threshold_path=None,
         print_detail=False,
         metric="xattn",
         p=0.9,
@@ -46,6 +48,31 @@ def _build_method_args(args) -> Namespace:
     return method_args
 
 
+def _load_threshold_table(path: str | Path, *, num_layers: int, num_heads: int) -> torch.Tensor:
+    threshold_path = Path(path).expanduser()
+    if not threshold_path.is_file():
+        raise FileNotFoundError(f"XAttention threshold table does not exist: {threshold_path}")
+    if threshold_path.suffix.lower() != ".json":
+        raise ValueError(
+            f"XAttention threshold_path must point to a JSON file, got: {threshold_path}"
+        )
+
+    with threshold_path.open("r", encoding="utf-8") as file:
+        values = json.load(file)
+    threshold = torch.tensor(values, dtype=torch.float32)
+    expected_shape = (num_layers, num_heads)
+    if tuple(threshold.shape) != expected_shape:
+        raise ValueError(
+            f"XAttention threshold table must have shape {expected_shape}, "
+            f"got {tuple(threshold.shape)} from {threshold_path}"
+        )
+    if not torch.isfinite(threshold).all():
+        raise ValueError(f"XAttention threshold table contains non-finite values: {threshold_path}")
+    if torch.any((threshold < 0) | (threshold > 1)):
+        raise ValueError(f"XAttention threshold values must be in [0, 1]: {threshold_path}")
+    return threshold
+
+
 def load_model_and_tokenizer(args):
     """Load a model through the XAttention FastPrefill loaders."""
     xattn_root = Path(__file__).resolve().parents[1] / "methods" / "x-attention"
@@ -55,40 +82,36 @@ def load_model_and_tokenizer(args):
     method_args = _build_method_args(args)
     path = args.model_path
 
-    if method_args.model_name.lower().startswith("qwen3"):
+    if "qwen3" in method_args.model_name.lower():
         from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
-        from xattn.src.load_qwen import FastPrefillConfig, forward_eval
+        from xattn.src.load_qwen import FastPrefillConfig, patch_model
 
         model = Qwen3ForCausalLM.from_pretrained(
             path,
             device_map="auto",
             dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
         )
         model.eval()
-        # Qwen3 has 36 layers and a distinct Q/K normalization path. The
-        # method's published Qwen2 table is 28x28, so use the documented 0.9
-        # threshold as a scalar on global-attention layers. Preserve native
-        # attention on Qwen3's sliding-window layers.
+        threshold_path = method_args.threshold_path
+        if threshold_path is not None and method_args.threshold is not None:
+            raise ValueError("Set only one of xattention.threshold and xattention.threshold_path")
         threshold = method_args.threshold
-        if threshold is None:
-            threshold = method_args.p
+        if threshold_path is not None:
+            threshold = _load_threshold_table(
+                threshold_path,
+                num_layers=model.config.num_hidden_layers,
+                num_heads=model.config.num_attention_heads,
+            )
         qwen3_config = FastPrefillConfig(
             threshold=threshold,
             print_detail=method_args.print_detail,
             stride=method_args.stride,
             metric=method_args.metric,
             p=method_args.p,
+            model_type=model.config.model_type,
         )
-        for layer in model.model.layers:
-            attention = layer.self_attn
-            if attention.sliding_window is not None:
-                continue
-            attention.num_heads = model.config.num_attention_heads
-            attention.num_key_value_heads = model.config.num_key_value_heads
-            attention.num_key_value_groups = model.config.num_attention_heads // model.config.num_key_value_heads
-            attention.hidden_size = model.config.hidden_size
-            attention.fastprefillconfig = qwen3_config
-            attention.forward = forward_eval.__get__(attention, type(attention))
+        model = patch_model(model, qwen3_config, skip_sliding_window=True)
         tokenizer = AutoTokenizer.from_pretrained(path)
         model_type = "qwen3"
     elif "llama" in method_args.model_name.lower():

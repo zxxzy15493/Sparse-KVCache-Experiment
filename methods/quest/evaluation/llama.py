@@ -1,19 +1,17 @@
 from contextlib import nullcontext
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
+import warnings
 
 import torch
-import torch.functional as F
+import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 
 import transformers.models
 from transformers.models.llama.modeling_llama import (
   LlamaForCausalLM,
-  CausalLMOutputWithPast,
-  List,
-  Union,
-  CrossEntropyLoss,
-  BaseModelOutputWithPast,
   apply_rotary_pos_emb,
 )
+from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 import types
 
 from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -555,15 +553,25 @@ def old_llama_decoder_layer_forward(
 
 
 def enable_tuple_kv_cache_for_llama():
+  modeling_llama = transformers.models.llama.modeling_llama
+  if not hasattr(modeling_llama, "LlamaFlashAttention2"):
+    warnings.warn(
+      "Transformers 4.57 uses Cache objects and a unified LlamaAttention class; "
+      "the legacy tuple-KV monkey patch is disabled. Use enable_quest_attention_eval instead.",
+      RuntimeWarning,
+      stacklevel=2,
+    )
+    return
+
   print("Enabling tuple KV cache for Llama")
-  transformers.models.llama.modeling_llama.LlamaModel._prepare_decoder_attention_mask = (
+  modeling_llama.LlamaModel._prepare_decoder_attention_mask = (
     lambda *args, **kwargs: None
   )
-  transformers.models.llama.modeling_llama.LlamaModel.forward = old_llama_model_forward
-  transformers.models.llama.modeling_llama.LlamaDecoderLayer.forward = old_llama_decoder_layer_forward
-  transformers.models.llama.modeling_llama.LlamaAttention.forward = old_flash_attention_2_forward
-  transformers.models.llama.modeling_llama.LlamaSdpaAttention.forward = old_flash_attention_2_forward
-  transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = old_flash_attention_2_forward
-  transformers.models.llama.modeling_llama.LlamaAttention._upad_input = _upad_input
-  transformers.models.llama.modeling_llama.LlamaAttention._flash_attention_forward = _flash_attention_forward
-  transformers.models.llama.modeling_llama.LlamaForCausalLM.forward = old_llama_for_causal_lm_forward
+  modeling_llama.LlamaModel.forward = old_llama_model_forward
+  modeling_llama.LlamaDecoderLayer.forward = old_llama_decoder_layer_forward
+  modeling_llama.LlamaAttention.forward = old_flash_attention_2_forward
+  modeling_llama.LlamaSdpaAttention.forward = old_flash_attention_2_forward
+  modeling_llama.LlamaFlashAttention2.forward = old_flash_attention_2_forward
+  modeling_llama.LlamaAttention._upad_input = _upad_input
+  modeling_llama.LlamaAttention._flash_attention_forward = _flash_attention_forward
+  modeling_llama.LlamaForCausalLM.forward = old_llama_for_causal_lm_forward

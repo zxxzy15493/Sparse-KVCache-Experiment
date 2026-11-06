@@ -130,15 +130,6 @@ def patch_qwen3_attention(attn: Qwen3Attention, config, layer_idx: int) -> None:
                 stage_end(pre_stage, self.layer_idx)
             if is_prefill:
                 attn_output, _ = self.kvcache_quantizer.prefill_attn(query_states, (key_states, value_states))
-                # Keep the upstream cache positionally complete.  Qwen3 generation
-                # queries Cache.get_seq_length() to build the next RoPE position.
-                # PQCache's compressor owns retrieval; this cache is metadata/
-                # generation compatibility state.
-                if past_key_values is not None:
-                    past_key_values.update(
-                        key_states, value_states, self.layer_idx,
-                        {"sin": sin, "cos": cos, "cache_position": cache_position},
-                    )
             else:
                 repeated_k = repeat_kv(key_states, self.num_key_value_groups)
                 repeated_v = repeat_kv(value_states, self.num_key_value_groups)

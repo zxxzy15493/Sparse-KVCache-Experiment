@@ -426,6 +426,8 @@ class MultiCoreCompressor_v2:
         per_iter_latency = []
 
         seqlen_list = list(range(100, 2000, 200)) + list(range(2000, 20000, 2000))
+        # 小容量任务首次标定时，也必须限制在实际共享缓冲区范围内。
+        seqlen_list = [seq_len for seq_len in seqlen_list if seq_len <= self.max_seq_len]
 
         for seq_len in tqdm(seqlen_list):
             if cent_cnt > seq_len:

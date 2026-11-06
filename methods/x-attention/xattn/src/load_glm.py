@@ -75,7 +75,10 @@ def glm_core_attention_forward(
   bsz, num_heads, q_len, head_dim = query_layer.shape
   k_len = key_layer.shape[2]
 
-  if q_len == k_len:
+  use_xattention = q_len == k_len and query_layer.is_cuda and (
+    bsz == 1 or attention_mask is None
+  )
+  if use_xattention:
     if self.fastprefillconfig.metric != "xattn":
       raise ValueError(f"Unknown metric: {self.fastprefillconfig.metric}")
 
@@ -103,7 +106,17 @@ def glm_core_attention_forward(
     attn_weights = torch.matmul(query_layer, key_layer.transpose(2, 3)) / math.sqrt(head_dim)
 
     if attention_mask is not None:
-      attn_weights = attn_weights.masked_fill(attention_mask, float("-inf"))
+      if attention_mask.dtype == torch.bool:
+        attn_weights = attn_weights.masked_fill(attention_mask, float("-inf"))
+      else:
+        attn_weights = attn_weights + attention_mask.to(attn_weights.device)
+    elif q_len > 1:
+      key_pos = torch.arange(k_len, device=query_layer.device)
+      query_pos = torch.arange(q_len, device=query_layer.device) + (k_len - q_len)
+      causal_mask = key_pos[None, :] > query_pos[:, None]
+      attn_weights = attn_weights.masked_fill(
+        causal_mask[None, None], float("-inf")
+      )
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_layer.dtype)
     attn_weights = nn.functional.dropout(
@@ -155,7 +168,7 @@ def load_model(
   model = AutoModelForCausalLM.from_pretrained(
     name_or_path,
     trust_remote_code=True,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     low_cpu_mem_usage=True,
     device_map="auto",
   )

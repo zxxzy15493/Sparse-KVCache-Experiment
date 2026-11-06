@@ -148,7 +148,7 @@ def latency(
             "use_cache": True,
           }
 
-          forward_kwargs["num_logits_to_keep"] = 1
+          forward_kwargs["logits_to_keep"] = 1
           
           outputs = model(**forward_kwargs)
 

@@ -22,25 +22,13 @@ from flex_prefill.ops.flex_prefill_attention import flex_prefill_attention
 def llama_flex_prefill_attention_forward(
   self,
   hidden_states: torch.Tensor,
+  position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
   attention_mask: Optional[torch.LongTensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value: Optional[Cache] = None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
-  cache_position: Optional[torch.LongTensor] = None,
-  position_embeddings: Optional[
-    Tuple[torch.Tensor, torch.Tensor]
-  ] = None, # will become mandatory in v4.45
   past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-  if past_key_values is not None:
-    past_key_value = past_key_values
-  if isinstance(past_key_value, StaticCache):
-    raise ValueError(
-      "`static` cache implementation is not compatible with `attn_implementation==flash_attention_2` "
-      "make sure to use `sdpa` in the mean time, and open an issue at https://github.com/huggingface/transformers"
-    )
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+  past_key_values = kwargs.pop("past_key_value", past_key_values)
 
   output_attentions = False
 
@@ -61,15 +49,15 @@ def llama_flex_prefill_attention_forward(
   ).transpose(1, 2)
 
   if position_embeddings is None:
-    logger.warning_once(
-      "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
-      "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
-      "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.45 `position_ids` will be "
-      "removed and `position_embeddings` will be mandatory."
+    raise ValueError(
+      "Llama FlexPrefill requires position_embeddings from Transformers 4.57"
     )
-    cos, sin = self.rotary_emb(value_states, position_ids)
-  else:
-    cos, sin = position_embeddings
+  cos, sin = position_embeddings
+
+  if cos.device != query_states.device:
+    cos = cos.to(query_states.device)
+  if sin.device != query_states.device:
+    sin = sin.to(query_states.device)
 
   if triton.__version__ == "3.0.0":
     query_states, key_states = triton_apply_rotary_pos_emb(
@@ -80,9 +68,9 @@ def llama_flex_prefill_attention_forward(
       query_states, key_states, cos, sin
     )
 
-  if past_key_value is not None:
+  if past_key_values is not None:
     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-    key_states, value_states = past_key_value.update(
+    key_states, value_states = past_key_values.update(
       key_states, value_states, self.layer_idx, cache_kwargs
     )
 
@@ -131,6 +119,7 @@ def llama_flex_prefill_attention_forward(
     type=getattr(self.config, "type", None),
     save_path=getattr(self.config, "save_path", None),
     sample_id=getattr(self.config, "sample_id", ""),
+    attention_mask=attention_mask,
   )
 
   attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()

@@ -2554,12 +2554,21 @@ def record_blocks(task,model_name,seq_len,num_blocks):
 
 
 
-from transformers.utils import is_flash_attn_2_available
-
-if is_flash_attn_2_available():
+try:
   from flash_attn import flash_attn_func
-else:
-  flash_attn_func = triton_flash_attention
+except (ImportError, OSError):
+  flash_attn_func = None
+
+
+def _validate_attention_inputs(q, attention_mask):
+  if flash_attn_func is None:
+    raise RuntimeError("FlexPrefill requires flash_attn_func; install FlashAttention in the active Python environment.")
+  if attention_mask is not None:
+    raise NotImplementedError("FlexPrefill sparse kernels do not support attention_mask; masked/padded inputs are unsupported.")
+  if not q.is_cuda:
+    raise RuntimeError("FlexPrefill requires CUDA tensors.")
+  if q.dtype not in (torch.float16, torch.bfloat16):
+    raise TypeError("FlexPrefill requires float16 or bfloat16 tensors.")
 
 
 @torch.no_grad()
@@ -2581,6 +2590,7 @@ def flex_prefill_attention(
   type:str="",
   save_path:str="",
   sample_id: str = "",
+  attention_mask: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, float]]:
   """Flex Prefill sparse attention function. If query length is 1, will use flash decoding attention.
 
@@ -2600,9 +2610,10 @@ def flex_prefill_attention(
   Returns:
     Union[torch.Tensor, Tuple[torch.Tensor, float]]: if return_computational_ratio is True, return attention output, else return attention output and computation ratio.
   """
+  _validate_attention_inputs(q, attention_mask)
   batch_size, q_len, num_q_heads, head_dim = q.shape
   batch_size, k_len, num_kv_heads, head_dim = k.shape
-  assert batch_size == 1, "only support batch size 1 for now"
+
   if q_len == 1:
     if gqa_interleave:
       attn_out = triton_flash_attention(

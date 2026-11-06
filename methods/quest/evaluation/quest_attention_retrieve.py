@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast
 
 import types
+import inspect
 
 try:
   from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -26,10 +27,20 @@ from transformers.models.llama.modeling_llama import (
 
 
 
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import Cache
 from transformers.models.mistral.modeling_mistral import MistralAttention
 
 _QUEST_BREAKDOWN_TIME_MANAGER = None
+
+
+def _filter_kwargs_for_fn(fn, kwargs):
+  try:
+    parameters = inspect.signature(fn).parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+      return kwargs
+    return {key: value for key, value in kwargs.items() if key in parameters}
+  except Exception:
+    return kwargs
 
 
 def _breakdown_measure(component: str, *, pre_attn: bool = False):
@@ -131,46 +142,6 @@ def quest_select_token_indices_from_scores(attn_weights, token_budget, chunk_siz
   return selected_token_idx, selected_token_valid
 
 
-def _selected_attention_fallback(
-  query_states,
-  selected_key_states,
-  selected_value_states,
-  selected_token_idx,
-  selected_token_valid,
-  kv_seq_len,
-  output_attentions,
-):
-  attn_weights = torch.matmul(
-    query_states,
-    selected_key_states.transpose(2, 3),
-  ) / math.sqrt(query_states.shape[-1])
-
-  min_value = torch.finfo(attn_weights.dtype).min
-  attn_weights = attn_weights.masked_fill(~selected_token_valid, min_value)
-  attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-    query_states.dtype
-  )
-  attn_output = torch.matmul(attn_weights, selected_value_states)
-
-  if output_attentions:
-    full_attn_weights = torch.zeros(
-      *attn_weights.shape[:-1],
-      kv_seq_len,
-      device=attn_weights.device,
-      dtype=attn_weights.dtype,
-    )
-    valid_attn_weights = attn_weights * selected_token_valid.to(attn_weights.dtype)
-    attn_weights = full_attn_weights.scatter_add_(
-      -1,
-      selected_token_idx,
-      valid_attn_weights,
-    )
-  else:
-    attn_weights = None
-
-  return attn_output, attn_weights
-
-
 def _flash_attention_selected_tokens(
   query_states,
   selected_key_states,
@@ -178,13 +149,13 @@ def _flash_attention_selected_tokens(
   selected_token_valid,
 ):
   if query_states.device.type != "cuda":
-    return None
+    raise RuntimeError("Quest FlashAttention retrieval requires CUDA tensors.")
   if query_states.dtype not in (torch.float16, torch.bfloat16):
-    return None
+    raise TypeError("Quest FlashAttention retrieval requires float16 or bfloat16 tensors.")
 
   bsz, num_heads, q_len, head_dim = query_states.shape
   if q_len != 1:
-    return None
+    raise ValueError("Quest FlashAttention retrieval requires a single decode query.")
 
   softmax_scale = 1.0 / math.sqrt(head_dim)
   selected_token_valid = selected_token_valid.squeeze(2)
@@ -192,7 +163,7 @@ def _flash_attention_selected_tokens(
 
   if all_tokens_valid:
     if flash_attn_func is None:
-      return None
+      raise RuntimeError("Quest retrieval requires flash_attn_func; install FlashAttention in the active Python environment.")
     with _breakdown_measure("attn"):
       attn_output = flash_attn_func(
         query_states.transpose(1, 2).contiguous(),
@@ -205,13 +176,13 @@ def _flash_attention_selected_tokens(
     return attn_output.transpose(1, 2).contiguous()
 
   if flash_attn_varlen_func is None:
-    return None
+    raise RuntimeError("Quest retrieval requires flash_attn_varlen_func for partially valid selections.")
 
   selected_len = selected_key_states.shape[2]
   batch_heads = bsz * num_heads
   valid_counts = selected_token_valid.sum(dim=-1).reshape(-1)
   if bool((valid_counts == 0).any().item()):
-    return None
+    raise ValueError("Quest retrieval selected no valid tokens for an attention head.")
 
   flat_valid = selected_token_valid.reshape(batch_heads, selected_len)
   flat_key_states = selected_key_states.reshape(batch_heads, selected_len, head_dim)
@@ -356,25 +327,34 @@ def calculate_topkrate(
 def forward(
   self,
   hidden_states: torch.Tensor,
+  position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
   attention_mask: Optional[torch.Tensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value: Optional[Tuple[torch.Tensor]] = None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
+  past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+):
   bsz, q_len, _ = hidden_states.size()
+  position_ids = kwargs.pop("position_ids", None)
+  output_attentions = bool(kwargs.pop("output_attentions", False))
+  use_cache = bool(kwargs.pop("use_cache", past_key_values is not None))
+  past_key_value = past_key_values
+  if past_key_value is None:
+    past_key_value = kwargs.pop("past_key_value", None)
 
   if q_len > 1 or self.layer_id < 2:
-    return self.flash_forward(
-      hidden_states,
-      attention_mask,
-      position_ids,
-      past_key_value,
-      output_attentions,
-      use_cache,
-      **kwargs,
+    call_kwargs = dict(kwargs)
+    call_kwargs.update(
+      hidden_states=hidden_states,
+      position_embeddings=position_embeddings,
+      attention_mask=attention_mask,
+      position_ids=position_ids,
+      past_key_values=past_key_value,
+      cache_position=cache_position,
+      output_attentions=output_attentions,
+      use_cache=use_cache,
     )
+    outputs = self.flash_forward(**_filter_kwargs_for_fn(self.flash_forward, call_kwargs))
+    return outputs[0], outputs[1]
   
 
   abs_pos = int(position_ids[0, -1].item())
@@ -406,25 +386,39 @@ def forward(
   )
   
 
-  if isinstance(past_key_value, DynamicCache):
-    kv_seq_len = past_key_value.get_seq_length()
-  else:
-    kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
-      assert isinstance(past_key_value, tuple)
-      kv_seq_len += past_key_value[0].shape[-2]
+  kv_seq_len = key_states.shape[-2]
+  if isinstance(past_key_value, Cache):
+    try:
+      kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
+    except TypeError:
+      kv_seq_len += past_key_value.get_seq_length()
+  elif past_key_value is not None:
+    kv_seq_len += past_key_value[0].shape[-2]
   
 
-  cos, sin = self.rotary_emb(value_states, position_ids.to(value_states.device))
+  if position_embeddings is None:
+    if position_ids is None:
+      if cache_position is None:
+        raise ValueError("Quest requires position_embeddings, position_ids, or cache_position")
+      position_ids = cache_position.unsqueeze(0).expand(bsz, -1)
+    cos, sin = self.rotary_emb(value_states, position_ids.to(value_states.device))
+  else:
+    cos, sin = position_embeddings
+  cos = cos.to(query_states.device)
+  sin = sin.to(query_states.device)
   query_states, key_states = apply_rotary_pos_emb(
     query_states, key_states, cos, sin, position_ids
   )
 
 
-  if isinstance(past_key_value, DynamicCache):
-    if use_cache:
-      with _breakdown_measure("write_cache"):
-        key_states, value_states = past_key_value.update(key_states, value_states, layer_idx=self.layer_idx)
+  if isinstance(past_key_value, Cache):
+    with _breakdown_measure("write_cache"):
+      key_states, value_states = past_key_value.update(
+        key_states,
+        value_states,
+        layer_idx=self.layer_idx,
+        cache_kwargs={"sin": sin, "cos": cos, "cache_position": cache_position},
+      )
   else:
     if use_cache:
       with _breakdown_measure("write_cache"):
@@ -441,6 +435,17 @@ def forward(
 
   key_states = repeat_kv(key_states, self.num_key_value_groups)
   value_states = repeat_kv(value_states, self.num_key_value_groups)
+  kv_seq_len = key_states.shape[-2]
+
+  if attention_mask is not None and attention_mask.dim() == 2:
+    key_mask = attention_mask[:, -kv_seq_len:].to(device=query_states.device, dtype=torch.bool)
+    query_positions = torch.arange(q_len, device=query_states.device) + (kv_seq_len - q_len)
+    key_positions = torch.arange(kv_seq_len, device=query_states.device)
+    allowed = (key_positions[None, :] <= query_positions[:, None]) & key_mask[:, None, :]
+    min_value = torch.finfo(query_states.dtype).min
+    attention_mask = (~allowed)[:, None, :, :].to(query_states.dtype) * min_value
+  elif attention_mask is not None:
+    attention_mask = attention_mask.to(query_states.device)
 
 
   with _breakdown_measure("index_build"):
@@ -580,15 +585,15 @@ def forward(
 
   # )
 
+  if output_attentions:
+    raise NotImplementedError("Quest FlashAttention retrieval does not support output_attentions=True.")
   attn_weights = None
-  attn_output = None
-  if not output_attentions:
-    attn_output = _flash_attention_selected_tokens(
-      query_states,
-      selected_key_states,
-      selected_value_states,
-      selected_token_valid,
-    )
+  attn_output = _flash_attention_selected_tokens(
+    query_states,
+    selected_key_states,
+    selected_value_states,
+    selected_token_valid,
+  )
     #   )
 
 
@@ -600,36 +605,32 @@ def forward(
     )
 
   attn_output = attn_output.transpose(1, 2)
-  attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+  attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features)
   attn_output = self.o_proj(attn_output)
 
   if not output_attentions:
     attn_weights = None
 
-  return attn_output, attn_weights, past_key_value
-
-
-global layer_id
-layer_id = 32
+  return attn_output, attn_weights
 
 
 def enable_quest_attention_eval(model, args):
-  for name, module in reversed(model._modules.items()):
-    if len(list(module.children())) > 0:
-      enable_quest_attention_eval(
-        module,
-        args,
-      )
-
-    global layer_id
+  for module in model.modules():
     if isinstance(module, (LlamaAttention, MistralAttention)):
-      layer_id -= 1
-      model._modules[name].layer_id = layer_id
-
-      model._modules[name].flash_forward = model._modules[name].forward
-      model._modules[name].forward = types.MethodType(
-        forward, model._modules[name]
+      module.num_heads = getattr(module, "num_heads", module.config.num_attention_heads)
+      module.num_key_value_heads = getattr(
+        module, "num_key_value_heads", getattr(module.config, "num_key_value_heads", module.num_heads)
       )
+      module.num_key_value_groups = getattr(
+        module, "num_key_value_groups", module.num_heads // module.num_key_value_heads
+      )
+      module.hidden_size = getattr(module, "hidden_size", module.config.hidden_size)
+      module.layer_id = int(getattr(module, "layer_idx", 0))
+      if not hasattr(module, "_quest_retrieve_original_forward"):
+        module._quest_retrieve_original_forward = module.forward
+      module.flash_forward = module._quest_retrieve_original_forward
+      module.forward = types.MethodType(forward, module)
+      module.token_budget = int(args.token_budget)
+      module.chunk_size = int(args.chunk_size)
 
-      model._modules[name].token_budget = args.token_budget
-      model._modules[name].chunk_size = args.chunk_size
+  return model

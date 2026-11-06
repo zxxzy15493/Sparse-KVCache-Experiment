@@ -7,17 +7,12 @@ import time
 
 import flashinfer
 import torch
-from transformers import AutoTokenizer, StaticCache
+from transformers import AutoModelForCausalLM, AutoTokenizer, StaticCache
 from transformers.cache_utils import Cache
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 from transformers.utils import logging
 
-from threshold.threshold.qwen_threshold import (
-  qwen_fuse_80,
-  qwen_fuse_85,
-  qwen_fuse_90,
-  qwen_fuse_95,
-)
+from xattn.src.load_qwen import FastPrefillConfig as QwenFastPrefillConfig
 
 try:
   from xattn.src.Xattention_recall import Xattention_prefill
@@ -153,37 +148,24 @@ def _call_xattention_prefill(
   )
 
 
-class FastPrefillConfig(dict):
+class FastPrefillConfig(QwenFastPrefillConfig):
   def __init__(
     self,
     p: float = 0.9,
-    threshold: float = None,
+    threshold: float | torch.Tensor | list = None,
     print_detail: bool = False,
     stride: int = 16,
     metric: str = "xattn",
     task: str = " ",
     save_path: str = " ",
+    model_type: str = "qwen2",
   ):
-    super().__init__()
-    self.print_detail = print_detail
-    self.metric = metric
-    self.stride = stride
+    super().__init__(
+      threshold=threshold, print_detail=print_detail, stride=stride,
+      metric=metric, p=p, model_type=model_type,
+    )
     self.task = task
-    self.p = p
     self.save_path = save_path
-
-    if threshold is not None:
-      self.threshold = torch.ones((28, 28), device="cuda") * threshold
-    elif p == 0.9:
-      self.threshold = torch.tensor(qwen_fuse_90)
-    elif p == 0.85:
-      self.threshold = torch.tensor(qwen_fuse_85)
-    elif p == 0.8:
-      self.threshold = torch.tensor(qwen_fuse_80)
-    elif p == 0.95:
-      self.threshold = torch.tensor(qwen_fuse_95)
-    else:
-      raise ValueError(f"Unsupported p: {p}")
 
 
 def _layer_threshold(config: FastPrefillConfig, layer_idx: int, num_heads: int, device: torch.device):
@@ -498,15 +480,18 @@ def forward_to_save(
 
 
 def load_model(
-  fastprefillconfig: FastPrefillConfig = FastPrefillConfig(),
+  fastprefillconfig: FastPrefillConfig = None,
   name_or_path: str = "",
 ):
-  model = Qwen2ForCausalLM.from_pretrained(
+  if fastprefillconfig is None:
+    fastprefillconfig = FastPrefillConfig()
+  model = AutoModelForCausalLM.from_pretrained(
     name_or_path,
     device_map="auto",
     torch_dtype=torch.bfloat16,
   )
   model.eval()
+  fastprefillconfig.select_threshold(model.config.model_type)
 
   for layer in model.model.layers:
     layer.self_attn.fastprefillconfig = fastprefillconfig

@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--num_runs", "--iteration", dest="num_runs", type=int, default=4)
   parser.add_argument("--max_new_tokens", type=int, default=32)
   parser.add_argument("--stride", type=int, default=16)
+  parser.add_argument("--p", type=float, default=0.9, choices=[0.8, 0.85, 0.9, 0.95])
   parser.add_argument(
     "--threshold",
     type=float,
@@ -100,11 +101,12 @@ def first_model_device(model: Any) -> torch.device:
 
 def load_model_and_tokenizer(args: argparse.Namespace, family: str):
   if family == "qwen":
-    import xattn.src.load_qwen_flashinfer as loader_module
+    import xattn.src.load_qwen as loader_module
   else:
     import xattn.src.load_llama as loader_module
 
   config = loader_module.FastPrefillConfig(
+    p=args.p,
     threshold=args.threshold,
     print_detail=False,
     stride=args.stride,

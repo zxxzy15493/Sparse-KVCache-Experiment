@@ -47,7 +47,7 @@ from tqdm import tqdm
 
 import flashinfer  
 #from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from xattn.src.load_qwen import FastPrefillConfig
+from xattn.src.load_qwen import FastPrefillConfig, _layer_threshold
 
 # ===== Qwen + xattention  import =====
 from typing import Optional, Tuple, List, Dict, Any
@@ -65,7 +65,6 @@ from xattn.src.Xattention import Xattention_prefill
 
 from flash_attn import flash_attn_func
 #192k0.80.9    0.9  
-from qwen_ratio import max
 
 SERVER_TYPES = (
     "trtllm",
@@ -145,6 +144,7 @@ parser.add_argument("--batch_size", type=int, default=1)
 parser.add_argument(
     "--threshold", type=float, default=None, help="Threshold for grouping."
 )
+parser.add_argument("--p", type=float, default=0.9, choices=[0.8, 0.85, 0.9, 0.95])
 parser.add_argument(
     "--print_detail",
     action="store_true",
@@ -164,6 +164,7 @@ if args.server_type == "hf" or args.server_type == "gemini":
     args.threads = 1
 
 fastprefillconfig = FastPrefillConfig(
+    p=args.p,
     threshold=args.threshold,
     print_detail=args.print_detail,
     stride=args.stride,
@@ -369,17 +370,7 @@ class QwenXattnModel:
             method = "full"
         self.method = method
 
-        #  FastPrefillConfig.threshold 
-        thr_cfg = fastprefillconfig.threshold
-        if thr_cfg is None:
-            global_thr = 0.9  # 
-        elif isinstance(thr_cfg, torch.Tensor):
-            if thr_cfg.numel() == 1:
-                global_thr = float(thr_cfg.item())
-            else:
-                global_thr = float(thr_cfg.mean().item())
-        else:
-            global_thr = float(thr_cfg)
+        fastprefillconfig.select_threshold(self.model.config.model_type)
 
         #  self_attn 
         for name, module in self.model.named_modules():
@@ -387,13 +378,10 @@ class QwenXattnModel:
                 module.method = self.method
             #layer_idx   
                 layer_idx = int(name.split(".")[2])
-                if args.metric == "xattn":
-                    module.threshold = torch.tensor(max[layer_idx])
-                # layer_max = max[layer_idx]
-                # if isinstance(layer_max, torch.Tensor):
-                #     layer_max = layer_max.detach().cpu().tolist()
-                # else:
-                #     layer_max = list(layer_max)
+                if self.method == "xattn":
+                    module.threshold = _layer_threshold(
+                        fastprefillconfig, layer_idx, self.model.config.num_attention_heads, torch.device("cpu")
+                    )
 
                 module.forward = types.MethodType(
                     qwen_new_attention_forward, module

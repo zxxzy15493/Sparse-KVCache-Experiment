@@ -1,13 +1,15 @@
 from typing import Optional, Tuple
 import torch
-from transformers import AutoTokenizer,StaticCache
-from transformers.models.llama.modeling_llama import Cache,LlamaForCausalLM
-from transformers.models.llama.modeling_llama import (
-  logging,
-)
+from transformers import AutoTokenizer
+from transformers.cache_utils import Cache, StaticCache
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
+from transformers.utils import logging
 
 from threshold.threshold.llama_threshold import llama_fuse_16,llama_fuse_8,llama_fuse_4,llama_fuse_80,llama_fuse_85,llama_fuse_90,llama_fuse_95
-import flashinfer
+try:
+  import flashinfer
+except (ImportError, OSError):
+  flashinfer = None
 try:
   from flash_attn import flash_attn_func
 except Exception:
@@ -82,6 +84,26 @@ def dense_decode_attention(
     key_states = repeat_kv(key_states, num_key_value_groups)
     value_states = repeat_kv(value_states, num_key_value_groups)
 
+  q_len = query_states.shape[-2]
+  kv_len = key_states.shape[-2]
+  if isinstance(attention_mask, torch.Tensor) and attention_mask.dim() == 2:
+    key_mask = attention_mask[:, -kv_len:].to(query_states.device, torch.bool)
+    key_pos = torch.arange(kv_len, device=query_states.device)
+    query_pos = torch.arange(q_len, device=query_states.device) + (kv_len - q_len)
+    allowed = (key_pos[None, :] <= query_pos[:, None]) & key_mask[:, None, :]
+    attention_mask = (~allowed)[:, None].to(query_states.dtype) * torch.finfo(
+      query_states.dtype
+    ).min
+  elif isinstance(attention_mask, torch.Tensor):
+    attention_mask = attention_mask[..., :kv_len].to(query_states.device)
+  elif q_len > 1:
+    key_pos = torch.arange(kv_len, device=query_states.device)
+    query_pos = torch.arange(q_len, device=query_states.device) + (kv_len - q_len)
+    blocked = key_pos[None, :] > query_pos[:, None]
+    attention_mask = blocked[None, None].to(query_states.dtype) * torch.finfo(
+      query_states.dtype
+    ).min
+
   attn_weights = torch.matmul(
     query_states,
     key_states.transpose(2, 3),
@@ -108,6 +130,7 @@ def flash_attn_decode_attention(
     flash_attn_func is None
     or not query_states.is_cuda
     or query_states.dtype not in (torch.float16, torch.bfloat16)
+    or attention_mask is not None
   ):
     return dense_decode_attention(
       query_states,
@@ -146,15 +169,12 @@ def flash_attn_decode_attention(
 def forward_eval(
     self,
     hidden_states: torch.Tensor,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
-    output_attentions: bool = False,
-    use_cache: bool = False,
+    past_key_values: Optional[Cache] = None,
     cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, 
     **kwargs,
-  ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+  ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
       Performs a forward pass of the attention layer with optimized prefill mechanisms.
 
@@ -179,6 +199,9 @@ def forward_eval(
       The attention output tensor, attention weights (if enabled), and updated past key-value states.
     """
 
+    past_key_values = kwargs.pop("past_key_value", past_key_values)
+    position_ids = kwargs.pop("position_ids", None)
+
     if self.fastprefillconfig.print_detail:
       start_time = time.time()
     bsz, q_len, _ = hidden_states.size()
@@ -196,33 +219,38 @@ def forward_eval(
       print(f"   Reshape took: {reshape_time:.6f} seconds")
     
     if position_embeddings is None:
-      logger.warning_once(
-        "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
-        "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
-        "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.46 `position_ids` will be "
-        "removed and `position_embeddings` will be mandatory."
+      raise ValueError(
+        "Llama XAttention requires position_embeddings from Transformers 4.57"
       )
-      cos, sin = self.rotary_emb(value_states, position_ids)
-    else:
-      cos, sin = position_embeddings
+    cos, sin = position_embeddings
+    if cos.device != query_states.device:
+      cos = cos.to(query_states.device)
+    if sin.device != query_states.device:
+      sin = sin.to(query_states.device)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
     if self.fastprefillconfig.print_detail:
       start_time = time.time()
-    if past_key_value is not None:
+    past_length = 0
+    if past_key_values is not None and hasattr(past_key_values, "get_seq_length"):
+      past_length = past_key_values.get_seq_length(self.layer_idx)
+    if past_key_values is not None:
       cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-      key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+      key_states, value_states = past_key_values.update(
+        key_states, value_states, self.layer_idx, cache_kwargs
+      )
 
-    if isinstance(past_key_value, StaticCache):
-      key_states = key_states[:,:,:min(cache_position[-1] + 1, key_states.shape[2]),:]
-      value_states = value_states[:,:,:min(cache_position[-1]+1,value_states.shape[2]),:]
+    if isinstance(past_key_values, StaticCache) and cache_position is not None:
+      valid_length = int(cache_position[-1].item()) + 1
+      key_states = key_states[:, :, :valid_length, :]
+      value_states = value_states[:, :, :valid_length, :]
       
     _, _, k_len, _ = key_states.shape
     _, _, q_len, _ = query_states.shape
-    decoding = (q_len != k_len and q_len == 1)
+    decoding = q_len == 1 and past_length > 0
     if not decoding:
-      key_states = repeat_kv(key_states, self.num_key_value_groups).to("cuda")
-      value_states = repeat_kv(value_states, self.num_key_value_groups).to("cuda")
+      key_states = repeat_kv(key_states, self.num_key_value_groups).to(query_states.device)
+      value_states = repeat_kv(value_states, self.num_key_value_groups).to(query_states.device)
     if self.fastprefillconfig.print_detail:
       torch.cuda.synchronize()
       past_kv_time = time.time() - start_time
@@ -234,12 +262,25 @@ def forward_eval(
     stride = self.fastprefillconfig.stride
     if not decoding:
       if self.fastprefillconfig.metric == "xattn":
-        layer_id = int(getattr(self, "layer_idx", -1))
-        modelName="Llama"
-        if isinstance(self.fastprefillconfig.threshold, torch.Tensor):
-          attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold[self.layer_idx], use_triton=True)
+        if not query_states.is_cuda or attention_mask is not None:
+          attn_output = dense_decode_attention(
+            query_states, key_states, value_states, attention_mask, 1
+          )
         else:
-          attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold, use_triton=True)
+          threshold = self.fastprefillconfig.threshold
+          if isinstance(threshold, torch.Tensor):
+            threshold = threshold[self.layer_idx].to(query_states.device)
+          attn_output = Xattention_prefill(
+            query_states,
+            key_states,
+            value_states,
+            stride,
+            model_name="Llama",
+            layer_id=int(getattr(self, "layer_idx", -1)),
+            norm=1,
+            threshold=threshold,
+            use_triton=True,
+          )
       else:
         raise ValueError(f"Unknown metric: {self.fastprefillconfig.metric}")
     else:
@@ -318,7 +359,8 @@ class FastPrefillConfig(dict):
     self.stride = stride
     self.p = p
     if threshold is not None:
-      self.threshold = torch.ones((32, 32)).to("cuda") * threshold
+      # A scalar threshold also works for non-32-layer Llama variants.
+      self.threshold = float(threshold)
     else:
       #print(p)
       if p == 0.9:
@@ -331,8 +373,32 @@ class FastPrefillConfig(dict):
         self.threshold = torch.tensor(llama_fuse_95)
       else:
         raise ValueError(f"Unsupported p: {p}")
-    self.threshold = self.threshold.to("cuda")
     
+def patch_model(model, fastprefillconfig):
+  """Attach the Transformers 4.57-compatible XAttention forward in place."""
+  for layer in model.model.layers:
+    attention = layer.self_attn
+    attention.num_heads = getattr(
+      attention, "num_heads", model.config.num_attention_heads
+    )
+    attention.num_key_value_heads = getattr(
+      attention,
+      "num_key_value_heads",
+      getattr(model.config, "num_key_value_heads", model.config.num_attention_heads),
+    )
+    attention.num_key_value_groups = getattr(
+      attention,
+      "num_key_value_groups",
+      attention.num_heads // attention.num_key_value_heads,
+    )
+    attention.hidden_size = getattr(
+      attention, "hidden_size", model.config.hidden_size
+    )
+    attention.fastprefillconfig = fastprefillconfig
+    attention.forward = forward_eval.__get__(attention, type(attention))
+  return model
+
+
 def load_model(fastprefillconfig=FastPrefillConfig(),name_or_path=""):
   """
     Loads a LLaMA model with FastPrefill optimizations applied.
@@ -351,17 +417,11 @@ def load_model(fastprefillconfig=FastPrefillConfig(),name_or_path=""):
 
   model = LlamaForCausalLM.from_pretrained(
     name_or_path,
-    device_map="auto", 
-    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    dtype=torch.bfloat16,
+    attn_implementation="flash_attention_2",
   )
-  model.eval()
-  for layer in model.model.layers:
-    layer.self_attn.num_heads = getattr(layer.self_attn, "num_heads", model.config.num_attention_heads)
-    layer.self_attn.num_key_value_heads = getattr(layer.self_attn, "num_key_value_heads", getattr(model.config, "num_key_value_heads", model.config.num_attention_heads))
-    layer.self_attn.num_key_value_groups = getattr(layer.self_attn, "num_key_value_groups", layer.self_attn.num_heads // layer.self_attn.num_key_value_heads)
-    layer.self_attn.hidden_size = getattr(layer.self_attn, "hidden_size", model.config.hidden_size)
-    layer.self_attn.fastprefillconfig = fastprefillconfig
-    layer.self_attn.forward = forward_eval.__get__(layer.self_attn)
+  model = patch_model(model.eval(), fastprefillconfig)
   tokenizer = AutoTokenizer.from_pretrained(
     name_or_path
   )

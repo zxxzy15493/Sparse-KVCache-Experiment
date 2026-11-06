@@ -75,7 +75,7 @@ def load_model_and_tokenizer(args):
     model = AutoModelForCausalLM.from_pretrained(
         path,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
         attn_implementation=attn_implementation,

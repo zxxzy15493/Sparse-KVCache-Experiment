@@ -27,7 +27,7 @@ import math
 from xattn.src.Xattention import Xattention_prefill
 from flash_attn import flash_attn_func
 import types
-from qwen_ratio import max
+from xattn.src.load_qwen import FastPrefillConfig, _layer_threshold
 
 LONGBENCH_ROOT = Path(__file__).resolve().parent
 DEFAULT_LONGBENCH_DATASET = "THUDM/LongBench"
@@ -47,6 +47,8 @@ def parse_args(args=None):
         type=str,
         default="full",
     )
+    parser.add_argument("--p", type=float, default=0.9, choices=[0.8, 0.85, 0.9, 0.95])
+    parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument(
         "--longbench_dir",
         type=str,
@@ -335,34 +337,19 @@ if __name__ == "__main__":
     model, tokenizer, eos_token_ids = load_model_and_tokenizer(
         model2path[model_name], model_name
     )
+    if args.method == "xattn":
+        fastprefillconfig = FastPrefillConfig(
+            p=args.p, threshold=args.threshold, model_type=model.config.model_type
+        )
 
     for name, module in model.named_modules():
         if name.split(".")[-1] == "self_attn":
             layer_idx = int(name.split(".")[2])
             module.method = args.method
             if args.method == "xattn":
-                module.threshold = torch.tensor(max[layer_idx])
-
-            # if args.method == "xattn":
-            #     layer_max = max[layer_idx]
-            #     if isinstance(layer_max, torch.Tensor):
-            #         layer_max = layer_max.detach().cpu().tolist()
-            #     else:
-            #         layer_max = list(layer_max)
-
-            #     head_num = module.num_heads  # Qwen2.5-7B = 28 heads.   
-
-            #     if len(layer_max) >= head_num:
-            #         th = torch.tensor(layer_max[:head_num], dtype=torch.float32)
-            #     else:
-            #         avg = 0
-            #         # avg = float(sum(layer_max) / len(layer_max))
-            #         th = torch.tensor(
-            #             layer_max + [avg] * (head_num - len(layer_max)),
-            #             dtype=torch.float32,
-            #         )
-
-            #     module.threshold = th
+                module.threshold = _layer_threshold(
+                    fastprefillconfig, layer_idx, model.config.num_attention_heads, torch.device("cpu")
+                )
 
             module.forward = types.MethodType(new_attention_forward, module)
 

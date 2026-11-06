@@ -1,7 +1,7 @@
 import torch
 
 
-def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block_num):
+def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block_num, device="cuda"):
   """
     Creates a causal attention mask used in transformer-based models.
 
@@ -11,6 +11,7 @@ def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block
     - block_size (int): The size of each block in the sequence.
     - block_num (int): The total number of blocks in the sequence.
     - divide_block_num (int): The block index at which causality is applied.
+    - device: Device on which to allocate the mask; callers should pass the query device.
 
     Returns:
     - torch.Tensor: A mask tensor of shape (batch_size, head_num, block_size, total_size)
@@ -24,7 +25,6 @@ def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block
     )
 
   total_size = block_size * block_num
-  device = "cuda"
   mask = torch.zeros(block_size, total_size, device=device)
   if divide_block_num < block_num:
     mask[:, divide_block_num * block_size :] = float("-inf")

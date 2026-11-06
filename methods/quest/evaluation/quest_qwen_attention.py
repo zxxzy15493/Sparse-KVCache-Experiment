@@ -48,10 +48,7 @@ Qwen2FlashAttention2 = Qwen2Attention
 Qwen2SdpaAttention = Qwen2Attention
 _IMPORT_ERROR = None
 
-try:
-  from transformers.cache_utils import DynamicCache
-except Exception: # pragma: no cover
-  DynamicCache = tuple() # fallback for isinstance checks
+from transformers.cache_utils import Cache, DynamicCache
 
 
 _file_lock = threading.Lock()
@@ -262,7 +259,9 @@ def _filter_kwargs_for_fn(fn, kwargs):
   try:
     import inspect
     sig = inspect.signature(fn)
-    allowed = set(sig.parameters.keys())
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values()):
+      return kwargs
+    allowed = set(sig.parameters)
     return {k: v for k, v in kwargs.items() if k in allowed}
   except Exception:
     return kwargs
@@ -406,13 +405,10 @@ def calculate_topkrate(
 def forward(
   self,
   hidden_states: torch.Tensor,
-  attention_mask: Optional[torch.Tensor] = None,
-  position_ids: Optional[torch.LongTensor] = None,
-  past_key_value=None,
-  output_attentions: bool = False,
-  use_cache: bool = False,
-  cache_position: Optional[torch.LongTensor] = None,
   position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+  attention_mask: Optional[torch.Tensor] = None,
+  past_key_values: Optional[Cache] = None,
+  cache_position: Optional[torch.LongTensor] = None,
   **kwargs,
 ):
   """
@@ -423,7 +419,12 @@ def forward(
    - Decode (q_len == 1) in later layers: apply Quest's local heavy-hitter selection on attention scores.
   """
   bsz, q_len, _ = hidden_states.size()
-  past_key_value = kwargs.get("past_key_values", past_key_value)
+  position_ids = kwargs.pop("position_ids", None)
+  output_attentions = bool(kwargs.pop("output_attentions", False))
+  use_cache = bool(kwargs.pop("use_cache", past_key_values is not None))
+  past_key_value = past_key_values
+  if past_key_value is None:
+    past_key_value = kwargs.pop("past_key_value", None)
   if q_len > 1 or getattr(self, "layer_id", 0) < 2:
     call_kwargs = dict(kwargs)
     call_kwargs.update(
@@ -433,6 +434,8 @@ def forward(
       position_ids=position_ids,
       past_key_values=past_key_value,
       cache_position=cache_position,
+      output_attentions=output_attentions,
+      use_cache=use_cache,
     )
 
 
@@ -498,6 +501,8 @@ def forward(
 
 
   cos, sin = _get_rope_cos_sin(self, value_states, position_ids, kv_seq_len, position_embeddings)
+  cos = cos.to(query_states.device)
+  sin = sin.to(query_states.device)
   
 
   try:
@@ -509,7 +514,7 @@ def forward(
 
   if past_key_value is not None:
 
-    if hasattr(past_key_value, "update") and not (isinstance(past_key_value, (tuple, list))):
+    if isinstance(past_key_value, Cache):
       cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
       try:
         key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -520,8 +525,6 @@ def forward(
           )
         except TypeError:
           key_states, value_states = past_key_value.update(key_states, value_states, layer_idx=self.layer_idx)
-      if not use_cache:
-        pass
     else:
 
       key_states = torch.cat([past_key_value[0], key_states], dim=2)
@@ -545,6 +548,17 @@ def forward(
   positive_query = query_states * sign
 
   seq_length = signed_key_states.shape[-2]
+  # Transformers 4.57 keeps the FlashAttention padding mask in compact 2D
+  # form. Quest consumes an additive mask while selecting sparse tokens.
+  if attention_mask is not None and attention_mask.dim() == 2:
+    key_mask = attention_mask[:, -seq_length:].to(device=query_states.device, dtype=torch.bool)
+    query_positions = torch.arange(q_len, device=query_states.device) + (seq_length - q_len)
+    key_positions = torch.arange(seq_length, device=query_states.device)
+    allowed = (key_positions[None, :] <= query_positions[:, None]) & key_mask[:, None, :]
+    min_value = torch.finfo(query_states.dtype).min
+    attention_mask = (~allowed)[:, None, :, :].to(query_states.dtype) * min_value
+  elif attention_mask is not None and attention_mask.device != query_states.device:
+    attention_mask = attention_mask.to(query_states.device)
   padding_length = (self.chunk_size - seq_length % self.chunk_size) % self.chunk_size
 
   if padding_length > 0:
@@ -731,7 +745,7 @@ def forward(
 
   attn_output = torch.matmul(attn_weights, selected_value_states)
 
-  attn_output = attn_output.transpose(1, 2).contiguous().reshape(bsz, q_len, self.hidden_size)
+  attn_output = attn_output.transpose(1, 2).contiguous().reshape(bsz, q_len, self.o_proj.in_features)
   attn_output = self.o_proj(attn_output)
 
   if not output_attentions:
@@ -739,51 +753,38 @@ def forward(
 
   return attn_output, attn_weights
 
-global layer_id
-layer_id = 28
-
-
-
 def enable_quest_qwen_attention_eval(model, args):
+  if getattr(model.config, "_attn_implementation", None) == "sdpa":
+    raise ValueError("Quest does not support SDPA; select flash_attention_2 for native attention phases.")
   if Qwen2Attention is None:
     raise ImportError(
       "Failed to import Qwen2 attention classes from transformers. "
       "Please upgrade transformers. Original error: %r" % (_IMPORT_ERROR,)
     )
 
-  n_layers = getattr(getattr(model, "config", None), "num_hidden_layers", None)
-  if n_layers is None:
-    n_layers = getattr(getattr(model, "config", None), "n_layer", None)
-  if not isinstance(n_layers, int) or n_layers <= 0:
-    n_layers = 28 # fallback
+  for child in model.modules():
+    if isinstance(child, (Qwen2Attention, Qwen3Attention)):
+      child.num_heads = getattr(child, "num_heads", child.config.num_attention_heads)
+      child.num_key_value_heads = getattr(
+        child,
+        "num_key_value_heads",
+        getattr(child.config, "num_key_value_heads", child.config.num_attention_heads),
+      )
+      child.num_key_value_groups = getattr(
+        child, "num_key_value_groups", child.num_heads // child.num_key_value_heads
+      )
+      child.hidden_size = getattr(child, "hidden_size", child.config.hidden_size)
+      if not hasattr(child, "_quest_original_forward"):
+        child._quest_original_forward = child.forward
+      child.flash_forward = child._quest_original_forward
+      child.forward = types.MethodType(forward, child)
 
-  next_layer_id = n_layers
+      child.layer_id = int(getattr(child, "layer_idx", 0))
+      child.token_budget = int(getattr(args, "token_budget", 0))
+      child.chunk_size = int(getattr(args, "chunk_size", 16))
+      child.save_path = getattr(args, "save_path", None)
+      child.task = getattr(args, "task", None)
 
-  def _patch_module(m):
-    nonlocal next_layer_id
-
-    for name, child in reversed(m._modules.items()):
-      if len(list(child.children())) > 0:
-        _patch_module(child)
-
-      if isinstance(child, (Qwen2Attention, Qwen2FlashAttention2, Qwen2SdpaAttention, Qwen3Attention)):
-        child.num_heads = getattr(child, "num_heads", child.config.num_attention_heads)
-        child.num_key_value_heads = getattr(child, "num_key_value_heads", getattr(child.config, "num_key_value_heads", child.config.num_attention_heads))
-        child.num_key_value_groups = getattr(child, "num_key_value_groups", child.num_heads // child.num_key_value_heads)
-        child.hidden_size = getattr(child, "hidden_size", child.config.hidden_size)
-        if not hasattr(child, "flash_forward"):
-          child.flash_forward = child.forward
-
-        child.forward = types.MethodType(forward, child)
-
-        next_layer_id -= 1
-        child.layer_id = next_layer_id
-        child.token_budget = int(getattr(args, "token_budget", 0))
-        child.chunk_size = int(getattr(args, "chunk_size", 16))
-        child.save_path = getattr(args, "save_path", None)
-        child.task = getattr(args, "task", None)
-
-  _patch_module(model)
   return model
 
 enable_quest_attention_eval = enable_quest_qwen_attention_eval

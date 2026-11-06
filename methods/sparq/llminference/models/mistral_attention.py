@@ -24,6 +24,15 @@ from transformers.models.mistral.modeling_mistral import apply_rotary_pos_emb, r
 
 
 class MistralAttention(modeling_mistral.MistralAttention):
+    def __init__(self, config, layer_idx):
+        super().__init__(config, layer_idx)
+        # Transformers 4.57 keeps some of these values on the config only,
+        # while SparQ's plug-in attention needs them as module attributes.
+        self.num_heads = config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.hidden_size = config.hidden_size
+
     # MODIFIED (added)
     def _attn(
         self,
@@ -70,15 +79,14 @@ class MistralAttention(modeling_mistral.MistralAttention):
     def forward(
         self,
         hidden_states: torch.Tensor,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        past_key_values: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        # MODIFIED - added
-        assert attention_mask is not None, "attention_mask cannot be None when using sparse methods"
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        past_key_values = kwargs.pop("past_key_value", past_key_values)
+        output_attentions = bool(kwargs.pop("output_attentions", False))
 
         if "padding_mask" in kwargs:
             warnings.warn(
@@ -94,21 +102,27 @@ class MistralAttention(modeling_mistral.MistralAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        kv_seq_len = key_states.shape[-2]
-        if past_key_value is not None:
+        if position_embeddings is None:
+            raise ValueError(
+                "Mistral SparQ attention requires the position_embeddings supplied by Transformers 4.57"
+            )
+        cos, sin = position_embeddings
+        cos = cos.to(query_states.device)
+        sin = sin.to(query_states.device)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_values is not None:
             if self.layer_idx is None:
                 raise ValueError(
-                    f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
-                    "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
-                    "with a layer index."
+                    "MistralAttention needs layer_idx set when using the KV cache."
                 )
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, cache_kwargs
+            )
 
-        if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        if attention_mask is not None:
+            attention_mask = attention_mask[..., : key_states.shape[-2]].to(query_states.device)
 
         # MODIFIED (call)
         attn_output, attn_weights = self._attn(query_states, key_states, value_states, attention_mask)
@@ -120,11 +134,11 @@ class MistralAttention(modeling_mistral.MistralAttention):
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        attn_output = attn_output.reshape(bsz, q_len, self.o_proj.in_features)
 
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
 
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attn_weights

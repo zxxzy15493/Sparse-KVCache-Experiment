@@ -20,7 +20,7 @@ import math
 from xattn.src.Xattention import Xattention_prefill
 from flash_attn import flash_attn_func
 import types
-from qwen0_90_ratio import max as qwen_max
+from xattn.src.load_qwen import FastPrefillConfig, _layer_threshold
 
 # ── prompt templates ──────────────────────────────────────────────
 template_rag = open("prompts/0shot_rag.txt", encoding="utf-8").read()
@@ -440,6 +440,7 @@ def main():
                         help="XAttention diagnostic type (recall, topkrate, or empty for normal)")
     parser.add_argument("--budget", type=float, default=0.9,
                         help="Threshold budget (0.8, 0.85, 0.9, 0.95)")
+    parser.add_argument("--threshold", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -490,10 +491,10 @@ def main():
 
     model, tokenizer = load_model_and_tokenizer(args)
 
-    # ── xattention patching (qwen ratio) ──
-    # Select ratio file by budget
-    if args.budget == 0.9:
-        ratio_data = qwen_max
+    if args.method == "xattn":
+        fastprefillconfig = FastPrefillConfig(
+            p=args.budget, threshold=args.threshold, model_type=model.config.model_type
+        )
 
     for name, module in model.named_modules():
         if name.split(".")[-1] == "self_attn":
@@ -503,7 +504,9 @@ def main():
             module.xtype = args.type
             module.model_name = args.model_name
             if args.method == "xattn":
-                module.threshold = torch.tensor(ratio_data[layer_idx])
+                module.threshold = _layer_threshold(
+                    fastprefillconfig, layer_idx, model.config.num_attention_heads, torch.device("cpu")
+                )
             module.forward = types.MethodType(new_attention_forward, module)
 
     print(f"[Info] Qwen XAttention patched ({args.method}, stride={args.stride}, budget={args.budget})")

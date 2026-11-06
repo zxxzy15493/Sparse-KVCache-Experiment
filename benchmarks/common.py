@@ -14,8 +14,10 @@ MODEL_PATHS = {
     "llama-3.1-8b": "meta-llama/Llama-3.1-8B-Instruct",
     "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "qwen-2.5-7b-1m": "Qwen/Qwen2.5-7B-Instruct-1M",
+    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
     "qwen3-4b": "Qwen/Qwen3-4B",
     "qwen3-8b": "Qwen/Qwen3-8B",
+    "qwen3-32b": "Qwen/Qwen3-32B",
     "glm-4-9b-1m": "zai-org/glm-4-9b-chat-1m",
     "ds-qwen-1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
 }
@@ -27,8 +29,10 @@ MODEL_CONTEXT_LENGTHS = {
     "llama-3.1-8b": 131072,
     "qwen-2.5-7b": 131072,
     "qwen-2.5-7b-1m": 1000000,
+    "qwen3-0.6b": 40960,
     "qwen3-4b": 40960,
     "qwen3-8b": 40960,
+    "qwen3-32b": 40960,
     "glm-4-9b-1m": 1000000,
     "ds-qwen-1.5b": 32768,
 }

@@ -69,7 +69,7 @@ def benchmark_latency(model, tokenizer, prompt: str, seqlen: int, max_new_tokens
       input_ids=current_input_ids,
       past_key_values=past_key_values,
       use_cache=True,
-      num_logits_to_keep=1,
+      logits_to_keep=1,
     )
 
     past_key_values = outputs.past_key_values

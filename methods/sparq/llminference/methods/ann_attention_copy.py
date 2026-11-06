@@ -14,12 +14,15 @@ import types
 import json
 import torch
 from torch import Tensor, nn
+from transformers.cache_utils import Cache
 from transformers.models.gemma.configuration_gemma import GemmaConfig
 from transformers.models.gemma.modeling_gemma import GemmaAttention, GemmaForCausalLM
 from transformers.models.gpt_neox.configuration_gpt_neox import GPTNeoXConfig
 from transformers.models.gpt_neox.modeling_gpt_neox import (
   GPTNeoXAttention,
   GPTNeoXForCausalLM,
+  apply_rotary_pos_emb as apply_gpt_neox_rotary_pos_emb,
+  eager_attention_forward as gpt_neox_eager_attention_forward,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaForCausalLM
@@ -81,6 +84,7 @@ except ImportError:
 
 from .. import utility
 from ..models import gemma_attention, llama_attention, mistral_attention, qwen_attention,llama_attention02
+from ..models import flash_attention as flash_attention_backend
 from . import sparse_attention
 
 
@@ -112,7 +116,10 @@ def _looks_like_chatglm_model(model: nn.Module) -> bool:
   model_type = str(getattr(getattr(model, "config", None), "model_type", "")).lower()
   if "chatglm" in cls_name or model_type in {"chatglm", "glm"}:
     return True
-  archs = [str(x).lower() for x in getattr(getattr(model, "config", None), "architectures", [])]
+  archs = [
+    str(x).lower()
+    for x in (getattr(getattr(model, "config", None), "architectures", None) or [])
+  ]
   return any("glm" in x for x in archs) and any(
     name.endswith("core_attention") for name, _ in model.named_modules()
   )
@@ -448,74 +455,35 @@ class AnnAttention(nn.Module):
     _, _, key_heads, n_kv_seq, _ = key.shape
     is_shared = key_heads == 1
 
-    output = None
     weights = None
-
-    flash_dtype_ok = query.dtype in (torch.float16, torch.bfloat16)
-    if query.is_cuda and flash_dtype_ok:
-      try:
-        from flash_attn import flash_attn_func
-
-        q_flash = (
-          query.contiguous()
-          .reshape(B * n_kv, nhpkv, n_q, d)
-          .transpose(1, 2)
-          .contiguous()
-        )
-        if is_shared:
-          k_flash = (
-            key.squeeze(2)
-            .contiguous()
-            .reshape(B * n_kv, n_kv_seq, d)
-            .unsqueeze(2)
-          )
-          v_flash = (
-            value.squeeze(2)
-            .contiguous()
-            .reshape(B * n_kv, n_kv_seq, d)
-            .unsqueeze(2)
-          )
-        else:
-          k_flash = (
-            key.contiguous()
-            .reshape(B * n_kv, nhpkv, n_kv_seq, d)
-            .transpose(1, 2)
-            .contiguous()
-          )
-          v_flash = (
-            value.contiguous()
-            .reshape(B * n_kv, nhpkv, n_kv_seq, d)
-            .transpose(1, 2)
-            .contiguous()
-          )
-        with attn_timing_context():
-          flash_output = flash_attn_func(
-            q_flash,
-            k_flash,
-            v_flash,
-            dropout_p=0.0,
-            softmax_scale=d ** -0.5,
-            causal=False,
-            return_attn_probs=False,
-          )
-        output = (
-          flash_output.transpose(1, 2)
-          .contiguous()
-          .reshape(B, n_kv, nhpkv, n_q, d)
-        )
-        output = kv_weight[..., None] * output
-      except Exception:
-        output = None
-
-    if output is None:
-      with attn_timing_context():
-        scores = query.div(d ** 0.5) @ key.transpose(-1, -2)
-        weights = torch.softmax(scores, -1, dtype=torch.float32).to(value.dtype)
-        output = weights @ value
-      output = kv_weight[..., None] * output
-      weights *= kv_weight[..., None]
-    elif return_attn_weights:
+    q_flash = (
+      query.contiguous()
+      .reshape(B * n_kv, nhpkv, n_q, d)
+      .transpose(1, 2)
+      .contiguous()
+    )
+    if is_shared:
+      k_flash = key.squeeze(2).contiguous().reshape(B * n_kv, n_kv_seq, d).unsqueeze(2)
+      v_flash = value.squeeze(2).contiguous().reshape(B * n_kv, n_kv_seq, d).unsqueeze(2)
+    else:
+      k_flash = key.contiguous().reshape(B * n_kv, nhpkv, n_kv_seq, d).transpose(1, 2).contiguous()
+      v_flash = value.contiguous().reshape(B * n_kv, nhpkv, n_kv_seq, d).transpose(1, 2).contiguous()
+    with attn_timing_context():
+      flash_output = flash_attention_backend.flash_attention(
+        q_flash,
+        k_flash,
+        v_flash,
+        attention_mask=logmask,
+        dropout_p=0.0,
+        softmax_scale=d ** -0.5,
+        causal=False,
+      )
+    output = flash_output.transpose(1, 2).contiguous().reshape(B, n_kv, nhpkv, n_q, d)
+    output = kv_weight[..., None] * output
+    if return_attn_weights:
       scores = query.div(d ** 0.5) @ key.transpose(-1, -2)
+      if logmask is not None:
+        scores = scores + logmask
       weights = torch.softmax(scores, -1, dtype=torch.float32).to(value.dtype)
       weights *= kv_weight[..., None]
 
@@ -844,32 +812,78 @@ Model = Union[
 
 
 class GPTNeoXAttentionWithANN(GPTNeoXAttention): # type:ignore[misc]
-  def __init__(self, config: GPTNeoXConfig, settings: Settings):
-    super().__init__(config)
-    self.ann = AnnAttention(settings, self.num_attention_heads, self.head_size)
-
-  def _attn(
+  def __init__(
     self,
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attention_mask: Optional[Tensor] = None,
+    config: GPTNeoXConfig,
+    layer_idx: Optional[int],
+    settings: Settings,
+  ):
+    super().__init__(config, layer_idx)
+    self.num_attention_heads = config.num_attention_heads
+    self.ann = AnnAttention(settings, self.num_attention_heads, self.head_size)
+    self.ann.layer_idx = layer_idx
+
+  def forward(
+    self,
+    hidden_states: Tensor,
+    attention_mask: Optional[Tensor],
     head_mask: Optional[Tensor] = None,
-  ) -> Tuple[Tensor, Tensor]:
-    assert attention_mask is not None
-    assert head_mask is None
+    layer_past: Optional[Cache] = None,
+    output_attentions: Optional[bool] = False,
+    cache_position: Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[Tensor, Tensor]] = None,
+    **kwargs: Any,
+  ) -> Tuple[Tensor, Optional[Tensor]]:
+    input_shape = hidden_states.shape[:-1]
+    hidden_shape = (*input_shape, -1, 3 * self.head_size)
+    qkv = self.query_key_value(hidden_states).view(hidden_shape).transpose(1, 2)
+    query, key, value = qkv.chunk(3, dim=-1)
+
+    if position_embeddings is None:
+      raise ValueError(
+        "GPT-NeoX SparQ attention requires the position_embeddings supplied by Transformers 4.57"
+      )
+    cos, sin = position_embeddings
+    query, key = apply_gpt_neox_rotary_pos_emb(query, key, cos, sin)
+
+    if layer_past is not None:
+      cache_kwargs = {
+        "sin": sin,
+        "cos": cos,
+        "partial_rotation_size": self.rotary_ndims,
+        "cache_position": cache_position,
+      }
+      key, value = layer_past.update(key, value, self.layer_idx, cache_kwargs)
 
     if query.shape[-2] == 1:
-      return self.ann( # type:ignore[no-any-return]
+      if head_mask is not None:
+        raise ValueError("SparQ decode does not support GPT-NeoX head_mask")
+      attn_output, attn_weights = self.ann(
         query,
         key,
         value,
-        attention_mask.broadcast_to(key.unsqueeze(-3).shape[:-1]),
+        None if attention_mask is None else attention_mask[..., : key.shape[-2]].broadcast_to(
+          query.shape[0], query.shape[1], 1, key.shape[-2]
+        ),
+        return_attn_weights=bool(output_attentions),
+      )
+      attn_output = attn_output.transpose(1, 2).contiguous()
+    else:
+      attn_output, attn_weights = gpt_neox_eager_attention_forward(
+        self,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling=self.scaling,
+        dropout=0.0 if not self.training else self.attention_dropout,
+        head_mask=head_mask,
+        **kwargs,
       )
 
-    return super()._attn( # type:ignore[no-any-return]
-      query, key, value, attention_mask, head_mask
-    )
+    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+    attn_output = self.dense(attn_output)
+    return attn_output, attn_weights
 
 
 class LlamaAttentionWithANN(llama_attention02.LlamaAttention):
@@ -900,20 +914,11 @@ class LlamaAttentionWithANN(llama_attention02.LlamaAttention):
     if query.shape[-2] == 1:
 
       # )
-      if logmask is None:
-        logmask = torch.zeros(
-          query.shape[0],
-          1,
-          query.shape[-2],
-          key.shape[-2],
-          device=query.device,
-          dtype=query.dtype,
-        )
       return self.ann(
         query,
         key,
         value,
-        logmask.broadcast_to(*query.shape[:-1], key.shape[-2]),
+        None if logmask is None else logmask.broadcast_to(*query.shape[:-1], key.shape[-2]),
         return_attn_weights=False,
       )
     return super()._attn(query, key, value, logmask)
@@ -1028,10 +1033,32 @@ def convert(model: Model, settings: Settings) -> Model:
 
   def _replace(m: nn.Module) -> Optional[nn.Module]:
 
+    # `convert` may be reached more than once by benchmark wrappers.  All ANN
+    # attention classes inherit from their Transformers counterpart, so guard
+    # them before the broader isinstance checks below.
+    if isinstance(
+      m,
+      (
+        GPTNeoXAttentionWithANN,
+        LlamaAttentionWithANN,
+        MistralAttentionWithANN,
+        GemmaAttentionWithANN,
+        Qwen2AttentionWithANN,
+      ),
+    ):
+      return None
+
     if isinstance(m, Qwen3Attention):
       replacement = _copy_attention_weights(
         m, Qwen2AttentionWithANN(model.config, getattr(m, "layer_idx", None), settings)
       )
+      # Qwen2Attention and Qwen3Attention do not derive their projection bias
+      # flags from the config in exactly the same way.  Reuse Qwen3's modules
+      # verbatim so conversion cannot introduce freshly initialised biases.
+      replacement.q_proj = m.q_proj
+      replacement.k_proj = m.k_proj
+      replacement.v_proj = m.v_proj
+      replacement.o_proj = m.o_proj
       # Preserve Qwen3's per-head RMSNorm modules on the Qwen2-compatible ANN path.
       replacement.q_norm = m.q_norm
       replacement.k_norm = m.k_norm
@@ -1039,7 +1066,9 @@ def convert(model: Model, settings: Settings) -> Model:
     if isinstance(m, QWEN2_ATTENTION_TYPES):
       return Qwen2AttentionWithANN(model.config, getattr(m, "layer_idx", None), settings)
     if isinstance(m, GPTNeoXAttention):
-      return GPTNeoXAttentionWithANN(model.config, settings)
+      return GPTNeoXAttentionWithANN(
+        model.config, getattr(m, "layer_idx", None), settings
+      )
     if isinstance(m, LlamaAttention):
       return _copy_attention_weights(m, LlamaAttentionWithANN(model.config, m.layer_idx, settings))
     if isinstance(m, MISTRAL_ATTENTION_TYPES):

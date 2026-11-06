@@ -24,6 +24,7 @@ import torch.nn as nn
 
 import math
 from xattn.src.Xattention import Xattention_prefill
+from xattn.src.load_qwen import FastPrefillConfig, _layer_threshold
 from flash_attn import flash_attn_func
 import types
 
@@ -41,6 +42,7 @@ def parse_args():
   parser.add_argument("--dataset_path", type=str, required=True, help="Path to input text file used as prompt")
   parser.add_argument("--max_new_tokens", type=int, default=128, help="Max tokens to generate; TTFT mode forces this to 1")
   parser.add_argument("--p", type=float, default="0.9", help="")
+  parser.add_argument("--threshold", type=float, default=None)
 
   return parser.parse_args()
 
@@ -577,17 +579,10 @@ if __name__ == "__main__":
     args.model_path, model_name
   )
 
-  if args.p == 0.9:
-    from qwen0_90_ratio import max
-  elif args.p == 0.8:
-    from qwen0_8_ratio import max
-  elif args.p == 0.85:
-    from qwen0_85_ratio import max
-  elif args.p == 0.95:
-    from qwen0_95_ratio import max
-
-
-
+  if args.method == "xattn":
+    fastprefillconfig = FastPrefillConfig(
+      p=args.p, threshold=args.threshold, model_type=model.config.model_type
+    )
   for name, module in model.named_modules():
     if name.split(".")[-1] == "self_attn":
       layer_idx = int(name.split(".")[2])
@@ -596,27 +591,9 @@ if __name__ == "__main__":
       module.type=args.type
       module.model_name=args.model_name
       if args.method == "xattn":
-        layer_max = max[layer_idx]
-
-
-        if isinstance(layer_max, torch.Tensor):
-          layer_max = layer_max.detach().cpu().tolist()
-        else:
-          layer_max = list(layer_max)
-
-        head_num = module.num_heads
-
-
-        if len(layer_max) >= head_num:
-          th = torch.tensor(layer_max[:head_num], dtype=torch.float32)
-        else:
-          avg = float(sum(layer_max) / len(layer_max))
-          th = torch.tensor(
-            layer_max + [avg] * (head_num - len(layer_max)),
-            dtype=torch.float32,
-          )
-
-        module.threshold = th
+        module.threshold = _layer_threshold(
+          fastprefillconfig, layer_idx, model.config.num_attention_heads, torch.device("cpu")
+        )
 
       module.forward = types.MethodType(new_attention_forward, module)
 

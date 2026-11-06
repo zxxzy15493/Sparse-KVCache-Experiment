@@ -132,6 +132,9 @@ threshold/
 │   ├── train_threshold.py            # Main threshold profiling entry point
 │   ├── run_llama_threshold.sh        # Wrapper for Llama models
 │   ├── run_qwen_threshold.sh         # Wrapper for Qwen2 models
+│   ├── run_qwen3_threshold_64k.sh    # Qwen3 prompts up to 64K, YaRN 2x
+│   ├── run_qwen3_threshold_128k.sh   # Qwen3 prompts from 64K to 128K, YaRN 4x
+│   ├── run_qwen3_threshold_both.sh   # Run both Qwen3 calibrations sequentially
 │   ├── run_ds_qwen_threshold.sh      # Wrapper for DeepSeek-Distill-Qwen models
 │   └── run_glm_threshold.sh          # Wrapper for GLM/chatglm models
 └── threshold/
@@ -195,6 +198,45 @@ Qwen2:
 bash threshold/train_scripts/run_qwen_threshold.sh 0.9
 ```
 
+Qwen3-32B, prompts up to 64K:
+
+```bash
+MODEL_PATH=Qwen/Qwen3-32B \
+bash threshold/train_scripts/run_qwen3_threshold_64k.sh 0.9
+```
+
+This reads `threshold/qwen3_64k.json` and uses `max_position_embeddings=65536`
+with YaRN `factor=2.0`.
+
+Qwen3-32B, prompts from 64K to 128K:
+
+```bash
+MODEL_PATH=Qwen/Qwen3-32B \
+bash threshold/train_scripts/run_qwen3_threshold_128k.sh 0.9
+```
+
+This reads `threshold/qwen3_128k.json` and uses Qwen3's maximum validated
+context: `max_position_embeddings=131072` with YaRN `factor=4.0`.
+
+Both Qwen3 wrappers use `stride=16`, `block_size=128`, BF16, and write JSON.
+For Qwen3-32B, the resulting table must have shape `[64, 64]`.
+The default `CHUNK_TEXTS=1` saves a recoverable JSON result for each profiling
+text before merging them by element-wise maximum.
+
+Run all four target masses (`0.8`, `0.85`, `0.9`, and `0.95`) for both Qwen3
+ranges sequentially with one command:
+
+```bash
+MODEL_PATH=Qwen/Qwen3-32B \
+bash threshold/train_scripts/run_qwen3_threshold_both.sh
+```
+
+Pass one or more positional values to run only a subset, for example:
+
+```bash
+bash threshold/train_scripts/run_qwen3_threshold_both.sh 0.85 0.9
+```
+
 DeepSeek-Distill-Qwen:
 
 ```bash
@@ -231,6 +273,14 @@ Supported variables:
 | `OUTPUT_PATH` | Full output file path. Overrides `OUTPUT_DIR`. | Derived from model and `p` |
 | `CHUNK_TEXTS` | Number of texts per profiling chunk. `0` disables chunking. | `0` |
 | `BATCH_OUTPUT_DIR` | Directory for per-chunk threshold JSON files. | Derived from `OUTPUT_PATH` |
+| `MAX_TEXTS` | Profile only the first N texts for a smoke run; `0` means all. | `0` |
+| `CUDA_VISIBLE_DEVICES` | GPUs used by the Qwen3 wrappers. | `0,1` |
+| `DEVICE_MAP` | Device placement for the Qwen3 wrappers. | `balanced` |
+| `RESERVE_MEMORY_GIB` | Free memory reserved per GPU for activations by the Qwen3 wrappers. | `8` |
+| `MAX_MEMORY` | Explicit JSON weight budgets for the Qwen3 wrappers; overrides automatic budgets. | Empty |
+| `HEAD_CHUNK_SIZE` | Attention heads profiled together by the Qwen3 wrappers; `0` means all. | `4` |
+| `ESTIMATE_CHUNK_SIZE` | Query tokens per estimate chunk in the Qwen3 wrappers. | `16384` |
+| `RESUME_CHUNKS` | Reuse existing chunk JSON files in the Qwen3 wrappers. | `true` |
 
 Examples:
 
@@ -264,18 +314,80 @@ Important arguments:
 | Argument | Description |
 | --- | --- |
 | `--name_or_path` | Hugging Face model ID or local model directory. Required. |
-| `--model_type` | One of `auto`, `llama`, `qwen2`, or `glm`. |
+| `--model_type` | One of `auto`, `llama`, `qwen2`, `qwen3`, or `glm`. |
 | `--p` | Target cumulative attention mass in `(0, 1]`. Required. |
 | `--text_path` | JSON file containing profiling strings. |
 | `--output_path` | Output threshold table path. |
 | `--output_format` | `py`, `json`, or `auto`. |
 | `--output_var` | Variable name used when writing a Python file. |
-| `--stride` | XAttention stride. Defaults to `16` for DeepSeek models and `8` otherwise. |
+| `--stride` | XAttention stride. Defaults to `16` for Qwen3/DeepSeek and `8` otherwise. |
 | `--block_size` | Attention block size. Default: `128`. |
-| `--device_map` | Transformers device map. Defaults to `balanced` for Llama and `auto` otherwise. |
+| `--device_map` | Transformers device map. Defaults to `balanced` across visible GPUs. |
+| `--max_memory` | JSON weight budgets, e.g. `'{"0":"40GiB","1":"40GiB"}'`. Indices are relative to `CUDA_VISIBLE_DEVICES`. |
+| `--reserve_memory_gib` | With an inferred device map, subtract this many GiB from each GPU's free memory for weight placement. Default: `8`; explicit `--max_memory` overrides it. |
+| `--head_chunk_size` | Heads profiled together per layer. Default: `4`; `0` uses all heads. Smaller values reduce temporary memory. |
+| `--estimate_chunk_size` | Query tokens per XAttention estimate chunk. Default: `16384`; must be divisible by both `block_size` and `stride*64`. |
 | `--torch_dtype` | `float32`, `float16`, `bfloat16`, or `auto`. Default: `bfloat16`. |
-| `--attn_implementation` | Optional Transformers attention implementation. Qwen2 defaults to `flash_attention_2`. |
-| `--chunk_texts` | Process profiling texts in chunks to reduce peak memory pressure. |
+| `--attn_implementation` | Optional Transformers attention implementation. Qwen2/Qwen3 default to `flash_attention_2`. |
+| `--rope_scaling_json` | Optional JSON object assigned to `config.rope_scaling` before loading the model. |
+| `--max_position_embeddings` | Optional context limit assigned before model construction; `0` preserves the model config. |
+| `--chunk_texts` | Number of texts per saved profiling chunk; does not split an individual prompt or lower its attention memory requirement. |
+| `--max_texts` | Profile only the first N input texts; `0` means all. |
+
+## Multi-GPU Profiling
+
+Calibration runs without gradients and uses model parallelism: complete decoder layers
+are placed on different GPUs. Both Qwen3 wrappers default to GPUs `0,1` and `balanced`
+placement. Other model wrappers accept the same Python options through their trailing
+arguments. This is a single Python process; launch with `python` or the shell wrappers.
+
+For example, from `methods/x-attention`, using an environment with the dependencies installed:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+HEAD_CHUNK_SIZE=4 \
+RESERVE_MEMORY_GIB=12 \
+bash threshold/train_scripts/run_qwen3_threshold_128k.sh 0.9
+```
+
+For GPUs with different capacities or other memory usage, set weight budgets explicitly:
+
+```bash
+CUDA_VISIBLE_DEVICES=2,3 \
+MAX_MEMORY='{"0":"40GiB","1":"60GiB"}' \
+HEAD_CHUNK_SIZE=2 \
+ESTIMATE_CHUNK_SIZE=2048 \
+bash threshold/train_scripts/run_qwen3_threshold_64k.sh 0.9
+```
+
+The budgets apply to logical GPU indices after `CUDA_VISIBLE_DEVICES` remapping and
+limit model weight placement, not total runtime memory. Leave room for hidden states,
+MLP activations, and attention statistics. Automatic budgets reserve 8 GiB per visible
+GPU by default; the appropriate reserve depends on model size and prompt length.
+An explicit placement such as `--device_map cuda:0` bypasses automatic weight budgets;
+`--max_memory` requires an inferred map such as `balanced` or `auto`.
+
+The profiler skips the LM output head, keeps GQA K/V in their compact form for
+FlashAttention, computes statistics a few query heads at a time, and allocates masks
+on each layer's device. Head chunking does not divide a single layer across GPUs.
+It preserves the per-head threshold formula and the element-wise maximum across texts.
+Floating-point kernel differences may cause small numerical differences. Use
+`--head_chunk_size 0` to compare against processing all heads together.
+
+Run the regression tests from `methods/x-attention`:
+
+```bash
+PYTHONPATH=. python -m pytest -q \
+  tests/test_qwen3_threshold_profile.py \
+  tests/test_threshold_memory.py \
+  tests/test_transformers_457_compat.py
+```
+
+The tests cover threshold statistics against a dense reference, compact GQA,
+output lifetime, device hooks, weight budgets, and both launchers. CUDA tests
+compare FP16/BF16 head chunking and a randomly initialized two-layer Qwen3 model
+on one GPU versus two GPUs. They use small inputs and skip when the required
+GPUs are unavailable; they do not load the 32B checkpoint.
 
 ## Chunked Profiling
 
@@ -309,10 +421,26 @@ Default wrapper outputs:
 | --- | --- |
 | `run_llama_threshold.sh 0.9` | `xattn/threshold/threshold/llama_threshold_p90.py` |
 | `run_qwen_threshold.sh 0.9` | `xattn/threshold/threshold/qwen_threshold_p90.py` |
+| `run_qwen3_threshold_64k.sh 0.9` | `threshold/threshold/qwen3_32b_yarn2_64k_p90_s16.json` |
+| `run_qwen3_threshold_128k.sh 0.9` | `threshold/threshold/qwen3_32b_yarn4_128k_p90_s16.json` |
 | `run_ds_qwen_threshold.sh 0.8` | `xattn/threshold/threshold/ds_qwen_p80.py` |
 | `run_glm_threshold.sh 0.9` | `xattn/threshold/threshold/glm_threshold_p90.py` |
 
 If an evaluation script imports a specific existing module such as `threshold.threshold.qwen_threshold`, either update that module to import the generated table, or copy the generated variable into the module expected by the evaluation code.
+
+For the unified Qwen3 loader, pass the generated JSON matching the inference
+context configuration. For example, the 64K table is selected with:
+
+```bash
+python benchmarks/longbench/qwen3_32b_method_smoke.py \
+  --method xattention \
+  --set threshold_path=methods/x-attention/threshold/threshold/qwen3_32b_yarn2_64k_p90_s16.json
+```
+
+The loader verifies the table shape against the selected model and rejects
+non-finite values or values outside `[0, 1]`. Do not reuse a table trained with
+a different stride, model size, RoPE/YaRN setting, or substantially different
+context-length distribution.
 
 ## Troubleshooting
 
@@ -335,11 +463,19 @@ export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 CUDA out of memory
 
-Use fewer or shorter profiling texts, reduce batch chunk size, or enable chunked profiling:
+For a single long prompt, reduce the number of heads and estimate query tokens
+processed together, and leave more free memory for activations:
 
 ```bash
-CHUNK_TEXTS=1 bash threshold/train_scripts/run_llama_threshold.sh 0.9
+CUDA_VISIBLE_DEVICES=0,1 \
+HEAD_CHUNK_SIZE=1 \
+ESTIMATE_CHUNK_SIZE=2048 \
+RESERVE_MEMORY_GIB=16 \
+bash threshold/train_scripts/run_qwen3_threshold_128k.sh 0.9
 ```
+
+`CHUNK_TEXTS=1` saves progress after each text. Texts are already processed one at a
+time, so this setting does not resolve a single prompt's attention or MLP OOM.
 
 Unsupported model type
 
