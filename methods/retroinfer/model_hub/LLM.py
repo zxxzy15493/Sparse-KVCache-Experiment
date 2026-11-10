@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import time
 from numpy import rint
 import torch
@@ -82,19 +83,15 @@ class LLM:
         torch.cuda.empty_cache()
 
         # post attention
-        residual = hidden_states.clone()
+        for start_idx in range(0, seq_len, 1024):
+            end_idx = min(seq_len, start_idx + 1024)
+            chunk = hidden_states[:, start_idx:end_idx, :]
+            normalized = self.layernorm(chunk,
+                                        layer.post_attention_layernorm_variance_epsilon,
+                                        layer.post_attention_layernorm_weight)
+            mlp_output = self.mlp(normalized, layer)
+            chunk.add_(mlp_output)
 
-        # chunk for lower memory comsumption
-        for start_idx in range(0, seq_len, 8192//bsz):
-            end_idx = min(seq_len, start_idx + 8192//bsz)
-            hidden_states[:, start_idx:end_idx, :] = self.layernorm(hidden_states[:, start_idx:end_idx, :], 
-                                                                    layer.post_attention_layernorm_variance_epsilon, 
-                                                                    layer.post_attention_layernorm_weight)
-            hidden_states[:, start_idx:end_idx, :] = self.mlp(hidden_states[:, start_idx:end_idx, :], layer)   
-        
-        hidden_states += residual
-
-        del residual
         torch.cuda.empty_cache()
 
         return hidden_states
@@ -125,10 +122,13 @@ class LLM:
         hidden_states = self.wo(attn_out, layer, bsz, seq_len, dim)
         hidden_states = residual + hidden_states
 
-        residual = hidden_states
-        hidden_states = self.layernorm(hidden_states, layer.post_attention_layernorm_variance_epsilon, layer.post_attention_layernorm_weight)
-        hidden_states = self.mlp(hidden_states, layer)
-        hidden_states = residual + hidden_states
+        seq_len = hidden_states.shape[1]
+        for start in range(0, seq_len, 1024):
+            end = min(start + 1024, seq_len)
+            chunk = hidden_states[:, start:end, :]
+            normalized = self.layernorm(chunk, layer.post_attention_layernorm_variance_epsilon, layer.post_attention_layernorm_weight)
+            mlp_output = self.mlp(normalized, layer)
+            chunk.add_(mlp_output)
 
         return hidden_states
 
@@ -178,16 +178,24 @@ class LLM:
         
         return logits
 
-    def inference(self, inputs_ids, fixed_output_length, decode_start_callback=None):
+    def inference(
+        self,
+        inputs_ids,
+        fixed_output_length,
+        decode_start_callback=None,
+        step_context=None,
+    ):
         outputs_ids = []    # multi iteration, multi request
         output_ids = []     # single iteration, multi request
+        step_context = step_context or nullcontext
         
         print("Start prefilling ...")
         torch.cuda.synchronize()
         prefill_start = time.perf_counter()
 
-        logits = self.prefill_forward(inputs_ids=inputs_ids)
-        output_ids = logits.argmax(dim=-1)
+        with step_context():
+            logits = self.prefill_forward(inputs_ids=inputs_ids)
+            output_ids = logits.argmax(dim=-1)
         outputs_ids.append(output_ids)
         self.move()
 
@@ -233,8 +241,9 @@ class LLM:
         for _ in range(self.max_new_length-1):
             if fixed_output_length == 0 and stop_token_ids and bool(finished.all()):
                 break
-            logits = self.decode_forward(inputs_ids=output_ids)
-            output_ids = logits.argmax(dim=-1)
+            with step_context():
+                logits = self.decode_forward(inputs_ids=output_ids)
+                output_ids = logits.argmax(dim=-1)
             if fixed_output_length == 0 and stop_token_ids:
                 output_ids = output_ids.masked_fill(finished.unsqueeze(-1), padding_token)
                 finished |= torch.isin(output_ids.squeeze(-1), stop_tokens)
@@ -269,6 +278,7 @@ class LLM:
         prefill_method="Full_Flash_Attn",
         fixed_output_length=0,
         decode_start_callback=None,
+        step_context=None,
     ):
         """ LLM Inference.
         Args:
@@ -306,6 +316,7 @@ class LLM:
             inputs_ids,
             fixed_output_length,
             decode_start_callback=decode_start_callback,
+            step_context=step_context,
         )
 
 

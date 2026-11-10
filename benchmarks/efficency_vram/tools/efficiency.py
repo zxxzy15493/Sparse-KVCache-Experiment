@@ -41,8 +41,8 @@ class EfficiencyMeter:
         decode_steps = len(steps) - 1 if steps else None
         return {
             "generation_latency_s": self.elapsed,
-            "output_throughput_tokens_per_s": self.batch_size * self.output_length / self.elapsed,
             "ttft_s": steps[0] if steps else None,
+            "ttft_ms": steps[0] * 1000 if steps else None,
             "tpot_ms": decode_s * 1000 / decode_steps if decode_steps else None,
             "decode_latency_s": decode_s,
             "decode_steps": decode_steps,

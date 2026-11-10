@@ -262,10 +262,8 @@ def adaptive_qwen2_flash_attn2_forward(
     else:
         cos, sin = self.rotary_emb(value_states, position_ids)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-    
-    if self.num_key_value_groups > 1:
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
+    # NOTE: repeat_kv is deferred — expanded only temporarily for update_kv (prefill)
+    #   or for cache update (decode, 1 token → negligible); flash attn uses compact K/V
 
     if past_key_value is not None:
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
@@ -278,9 +276,17 @@ def adaptive_qwen2_flash_attn2_forward(
 
         if is_prefill:
             self.kv_seq_len = kv_seq_len
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states)
+            # Expand K/V temporarily for per-head compression scoring (freed after update_kv)
+            if self.num_key_value_groups > 1:
+                _exp_k = repeat_kv(key_states, self.num_key_value_groups)
+                _exp_v = repeat_kv(value_states, self.num_key_value_groups)
+                key_states_compress, value_states_compress = self.kv_cluster.update_kv(_exp_k, query_states, _exp_v)
+                del _exp_k, _exp_v
+            else:
+                key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states)
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
 
+            # Flash attention with compact K/V — GQA expansion handled inside flash_attn CUDA kernel
             query_states_t = query_states.transpose(1, 2)
             key_states_t = key_states.transpose(1, 2)
             value_states_t = value_states.transpose(1, 2)
@@ -326,6 +332,10 @@ def adaptive_qwen2_flash_attn2_forward(
 
         else:
             self.kv_seq_len = getattr(self, "kv_seq_len", 0) + q_len
+            # Expand K/V for cache update (cache stores per-expanded-head entries; 1 token → negligible)
+            if self.num_key_value_groups > 1:
+                key_states = repeat_kv(key_states, self.num_key_value_groups)
+                value_states = repeat_kv(value_states, self.num_key_value_groups)
 
             cache_kwargs["head_lens"] = self.kv_cluster.head_lens
             cache_kwargs["cu_klen"] = self.kv_cluster.cu_klen
@@ -423,4 +433,10 @@ def prepare_inputs_for_generation_qwen2(
     )
     if num_logits_to_keep is not None:
         model_inputs["num_logits_to_keep"] = num_logits_to_keep
+        model_inputs["logits_to_keep"] = num_logits_to_keep
+    else:
+        # Force logits_to_keep=1 during prefill — only compute the last logit,
+        # avoiding the full [bsz,seq,vocab] tensor (~2004MiB at seq=8192)
+        model_inputs["num_logits_to_keep"] = 1
+        model_inputs["logits_to_keep"] = 1
     return model_inputs

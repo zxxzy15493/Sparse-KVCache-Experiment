@@ -7,6 +7,34 @@ from pathlib import Path
 import torch
 
 from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
+
+
+def _load_efficiency_model(args, cluster_args, path, device):
+    """Load ClusterKV's kernel-cache model used by its own efficiency benchmark."""
+    if "llama" in cluster_args.model:
+        from clusterkv.clusterkv_models.llama import LlamaForCausalLM as ClusterKVForCausalLM
+    elif "qwen" in cluster_args.model:
+        from clusterkv.clusterkv_models.myqwen2 import Qwen2ForCausalLM as ClusterKVForCausalLM
+    else:
+        raise ValueError(f"ClusterKV efficiency backend does not support model '{args.model}'")
+    model = ClusterKVForCausalLM.from_pretrained(
+        path, torch_dtype=torch.float16, low_cpu_mem_usage=True,
+    ).to(device).eval()
+    model.clusterkv_init(
+        nlist=cluster_args.nlist,
+        niter=cluster_args.fit_iter,
+        max_seq_len=int(args.max_seq_length) + int(args.fixed_output_length) + 512,
+        token_budget=cluster_args.token_budget,
+        dtype=torch.float16,
+        device=device,
+        full=False,
+        sink=16,
+        window=320,
+        window_nlist=8,
+        offload=False,
+    )
+    return model
 
 
 def load_model_and_tokenizer(args):
@@ -34,6 +62,14 @@ def load_model_and_tokenizer(args):
     model_name = cluster_args.model
     path = args.model_path
     device = torch.device(args.device)
+    if getattr(args, "efficiency_backend", False):
+        tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+        model = _load_efficiency_model(args, cluster_args, path, device)
+        args._method_args = cluster_args
+        args._base_nlist = cluster_args.nlist
+        args._cleanup = None
+        return model, tokenizer
+
     if "qwen" in model_name or "glm4" in model_name:
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
@@ -63,6 +99,7 @@ def load_model_and_tokenizer(args):
     # Reset it for each unified model load so multiple requested models are valid.
     cluster_patch.layer_id = getattr(model.config, "num_hidden_layers", 32)
     cluster_patch.enable_attention_eval(model_name, model, cluster_args)
+    enable_chunked_post_ffn(model)
 
     args._method_args = cluster_args
     args._base_nlist = cluster_args.nlist

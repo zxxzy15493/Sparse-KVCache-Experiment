@@ -4,6 +4,7 @@ from argparse import Namespace
 from pathlib import Path
 import torch
 from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 def _build_method_args(args) -> Namespace:
     method_args = Namespace(
@@ -88,4 +89,6 @@ def load_model_and_tokenizer(args):
 
     args._method_args = method_args
     args._cleanup = None
+    enable_chunked_post_ffn(model)
+
     return model, tokenizer

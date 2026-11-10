@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 
 def load_model_and_tokenizer(args):
@@ -87,6 +88,8 @@ def load_model_and_tokenizer(args):
 
     args._method_args = method_args
     args._cleanup = None
+    enable_chunked_post_ffn(model)
+
     return model, tokenizer
 
 

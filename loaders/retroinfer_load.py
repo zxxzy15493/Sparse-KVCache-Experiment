@@ -41,6 +41,7 @@ def generate(self, *args, **kwargs):
     prefill_method = kwargs.pop("prefill_method", getattr(loader_args, "prefill_method", "Full_Flash_Attn"))
     fixed_output_length = kwargs.pop("fixed_output_length", 0)
     decode_start_callback = kwargs.pop("decode_start_callback", None)
+    step_context = kwargs.pop("step_context", None)
     eos_token_id = kwargs.pop("eos_token_id", None)
 
     eos_tokens = getattr(self, "eos_tokens", [])
@@ -86,6 +87,7 @@ def generate(self, *args, **kwargs):
             prefill_method=prefill_method,
             fixed_output_length=fixed_output_length,
             decode_start_callback=decode_start_callback,
+            step_context=step_context,
         )
     finally:
         self.eos_tokens = original_eos_tokens
@@ -101,7 +103,10 @@ def load_model_and_tokenizer(args):
 
     from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel
     
-    max_len = MODEL_CONTEXT_LENGTHS[args.model]
+    # RetroInfer 的 KV cache 容量要同时容纳输入上下文和生成 token。
+    max_len = MODEL_CONTEXT_LENGTHS[args.model] + int(
+        getattr(args, "fixed_output_length", 0) or 32
+    )
 
     model_path_lower = args.model_path.lower()
 

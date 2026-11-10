@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from types import MethodType
 from benchmarks.common import MODEL_CONTEXT_LENGTHS, model_family
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 
 def _has_avx512f() -> bool:
@@ -40,6 +41,16 @@ def _magicpig_kl_config(args, dataset):
         raise ValueError(f"Missing MagicPig config for model '{args.model}' ({model_key}). Available models: {available}")
 
     dataset_config = model_config.get(dataset)
+    if dataset_config is None and dataset.startswith("ruler-") and dataset.split("-", 1)[1].isdigit():
+        ruler_lengths = {
+            int(key.split("-", 1)[1]): key
+            for key in model_config
+            if key.startswith("ruler-") and key.split("-", 1)[1].isdigit()
+        }
+        requested = int(dataset.split("-", 1)[1])
+        candidates = [length for length in ruler_lengths if length <= requested]
+        if candidates:
+            dataset_config = model_config[ruler_lengths[max(candidates)]]
     if dataset_config is None:
         available = ", ".join(sorted(model_config))
         raise ValueError(f"Missing MagicPig config for dataset '{dataset}'. Available datasets: {available}")
@@ -94,6 +105,7 @@ def load_model_and_tokenizer(args):
             generation_buffer=generation_buffer, max_length=max_len,
             device=getattr(args, "device", "cuda:0"), dtype=torch.bfloat16,
         )
+        enable_chunked_post_ffn(llm.model)
     elif 'llama' in args.model_path.lower():
         from models_single.llama import LlamaModel
         llm = LlamaModel(

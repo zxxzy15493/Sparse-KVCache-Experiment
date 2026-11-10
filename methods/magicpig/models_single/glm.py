@@ -435,9 +435,12 @@ class GLMModel:
         self.wrt_stream.synchronize()
         with torch.cuda.stream(self.wrt_stream):
             hidden_states = residual
-            for (start, end) in zip(self.chunk_start, self.chunk_end):
+            seq_len = hidden_states.shape[1]
+            for start in range(0, seq_len, 1024):
+                end = min(start + 1024, seq_len)
+                chunk = hidden_states[:, start:end, :]
                 h = layer_norm(
-                    hidden_states[:, start:end, :],
+                    chunk,
                     buffer.post_attention_layernorm_variance_epsilon,
                     buffer.post_attention_layernorm_weight,
                 )
@@ -445,7 +448,7 @@ class GLMModel:
                 up = F.linear(h, buffer.up_proj)
                 h = F.silu(gate) * up
                 h = F.linear(h, buffer.down_proj)
-                residual[:, start:end, :].add_(h)
+                chunk.add_(h)
 
         self.attention_server.fill(layer_idx, request_id, self.k_cache, self.v_cache, self.chunk_end[-1])
         if layer_idx == self.num_layers - 1:

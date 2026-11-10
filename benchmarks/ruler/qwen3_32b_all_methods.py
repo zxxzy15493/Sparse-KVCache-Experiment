@@ -29,8 +29,6 @@ RULER_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = RULER_ROOT.parents[1]
 DATA_ROOT = RULER_ROOT / "benchmark_root" / "qwen3-32b" / "synthetic"
 PRED_ROOT = RULER_ROOT / "benchmark_root_pred" / "synthetic" / "qwen3-32b-yarn2"
-STATUS_DEFAULT = RULER_ROOT / "qwen3_32b_yarn2_status.tsv"
-REPORT_DEFAULT = RULER_ROOT / "qwen3_32b_yarn2_report.md"
 
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(RULER_ROOT))
@@ -105,8 +103,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--data-root", type=Path, default=DATA_ROOT)
     parser.add_argument("--output-root", type=Path, default=PRED_ROOT)
-    parser.add_argument("--status-file", type=Path, default=STATUS_DEFAULT)
-    parser.add_argument("--report-file", type=Path, default=REPORT_DEFAULT)
     parser.add_argument("--slow-seconds", type=float, default=SLOW_SECONDS_DEFAULT,
                         help="Flag a method/length result as slow at this wall time")
     parser.add_argument("--low-score", type=float, default=LOW_SCORE_DEFAULT,
@@ -306,33 +302,6 @@ def verify_yarn(model: Any, method: str) -> None:
     print(f"[yarn] {method}: {actual}", flush=True)
 
 
-def ensure_status_header(path: Path) -> None:
-    if path.exists() and path.stat().st_size:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        csv.writer(handle, delimiter="\t").writerow(
-            ("method", "length", "status", "elapsed_seconds", "load_seconds", "inference_seconds",
-             "examples", "score_mean", "low_score_tasks", "slow", "prediction_dir", "error")
-        )
-
-
-def append_status(path: Path, row: list[Any]) -> None:
-    ensure_status_header(path)
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        header = next(reader)
-        existing = [
-            values for values in reader
-            if len(values) < 2 or (values[0] != str(row[0]) or values[1] != str(row[1]))
-        ]
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(header)
-        writer.writerows(existing)
-        writer.writerow(row)
-
-
 def evaluate_predictions(path: Path, tasks: list[str]) -> dict[str, float]:
     from evaluate import evaluate
 
@@ -344,46 +313,6 @@ def evaluate_predictions(path: Path, tasks: list[str]) -> dict[str, float]:
     if len(rows) < 3 or rows[1][0] != "Tasks" or rows[2][0] != "Score":
         return {}
     return {task: float(score) for task, score in zip(rows[1][1:], rows[2][1:])}
-
-
-def update_report(args: argparse.Namespace) -> None:
-    if not args.status_file.exists():
-        return
-    with args.status_file.open(encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
-    lines = [
-        "# Qwen3-32B RULER YaRN 2.0 run",
-        "",
-        "Configuration: budget 1024, 4k/8k/16k/32k/64k, 13 synthetic tasks, 50 samples/task by default.",
-        "Qwen3 prompts use the official non-thinking chat suffix; every loaded Qwen3 model receives YaRN factor 2.0 with original positions 32768.",
-        "The existing RULER `qwen-chat` entry stays available for Qwen2.5; Qwen3 uses its own empty think-block suffix.",
-        "Low-score flag: task mean below {:.1f}%. Slow flag: method/length wall time above {:.0f} seconds.".format(
-            args.low_score, args.slow_seconds
-        ),
-        "",
-        "| Method | Length | Status | Wall (s) | Load (s) | Inference (s) | Mean task score | Low tasks | Slow |",
-        "|---|---:|---|---:|---:|---:|---:|---|---|",
-    ]
-    for row in rows:
-        try:
-            mean_score = float(row["score_mean"]) if row["score_mean"] else float("nan")
-        except ValueError:
-            mean_score = float("nan")
-        elapsed = float(row["elapsed_seconds"] or 0)
-        load_seconds = float(row.get("load_seconds") or 0)
-        inference_seconds = float(row.get("inference_seconds") or 0)
-        score_text = f"{mean_score:.2f}" if mean_score == mean_score else "unavailable"
-        low_text = row.get("low_score_tasks") or "-"
-        slow_text = "yes" if row["slow"] == "yes" or elapsed > args.slow_seconds else "no"
-        lines.append(
-            f"| {row['method']} | {int(row['length']) // 1024}k | {row['status']} | "
-            f"{elapsed:.1f} | {load_seconds:.1f} | {inference_seconds:.1f} | "
-            f"{score_text} | {low_text} | {slow_text} |"
-        )
-        if row.get("error"):
-            lines.extend(("", f"- `{row['method']}` {row['length']} error: `{row['error']}`"))
-    args.report_file.parent.mkdir(parents=True, exist_ok=True)
-    args.report_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_method_length(args: argparse.Namespace, method: str, length: int) -> None:
@@ -419,14 +348,11 @@ def run_method_length(args: argparse.Namespace, method: str, length: int) -> Non
         total_by_task[task] = len(data)
 
     pending_count = sum(map(len, pending_by_task.values()))
-    load_elapsed = 0.0
-    inference_elapsed = 0.0
     if pending_count == 0:
         scores = evaluate_predictions(out_dir, list(args.tasks))
         elapsed = time.monotonic() - started
         examples = completed_all
         status = "complete"
-        error = ""
     else:
         from model_wrappers import RulerModel
 
@@ -435,12 +361,9 @@ def run_method_length(args: argparse.Namespace, method: str, length: int) -> Non
         examples = completed_all
         errors = []
         try:
-            load_started = time.monotonic()
             wrapper = RulerModel(method, args.model, 1024, args.device, overrides, max_seq_length=length)
-            load_elapsed = time.monotonic() - load_started
             verify_yarn(wrapper.model, method)
             max_new_tokens = {task: int(load_task_config(task)["tokens_to_generate"]) for task in args.tasks}
-            inference_started = time.monotonic()
             for task in args.tasks:
                 pending = pending_by_task[task]
                 if not pending:
@@ -504,10 +427,8 @@ def run_method_length(args: argparse.Namespace, method: str, length: int) -> Non
                     f"task={task} successful={successful}/{total_by_task[task]}",
                     flush=True,
                 )
-            inference_elapsed = time.monotonic() - inference_started
             scores = evaluate_predictions(out_dir, list(args.tasks))
             status = "complete" if not errors else "partial-sample-errors"
-            error = "; ".join(errors[:5])
         finally:
             try:
                 if wrapper is not None:
@@ -526,16 +447,10 @@ def run_method_length(args: argparse.Namespace, method: str, length: int) -> Non
     score_mean = sum(scores.values()) / len(scores) if scores else None
     low_tasks = [task for task, score in scores.items() if score < args.low_score]
     slow = elapsed > args.slow_seconds
-    append_status(args.status_file, [
-        method, length, status, f"{elapsed:.2f}", f"{load_elapsed:.2f}",
-        f"{inference_elapsed:.2f}", examples,
-        "" if score_mean is None else f"{score_mean:.2f}", ",".join(low_tasks),
-        "yes" if slow else "no", str(out_dir), error,
-    ])
-    update_report(args)
+    score_text = f"{score_mean:.2f}" if score_mean is not None else "unavailable"
     print(
         f"[done] method={method} length={length} status={status} elapsed={elapsed:.1f}s "
-        f"examples={examples} mean_score={score_mean if score_mean is not None else 'unavailable'} "
+        f"examples={examples} mean_score={score_text} "
         f"low_tasks={low_tasks} slow={slow}",
         flush=True,
     )
@@ -546,8 +461,6 @@ def main(argv: list[str] | None = None) -> int:
     args.model = MODEL_ID
     args.data_root = args.data_root.resolve()
     args.output_root = args.output_root.resolve()
-    args.status_file = args.status_file.resolve()
-    args.report_file = args.report_file.resolve()
     if args.limit is not None:
         args.num_samples = min(args.num_samples, args.limit)
 
@@ -572,24 +485,16 @@ def main(argv: list[str] | None = None) -> int:
 
     MODEL_CONTEXT_LENGTHS[MODEL_ALIAS] = 65536
     install_qwen3_yarn_patch()
-    ensure_status_header(args.status_file)
     failed = False
     for method in args.methods:
         for length in args.lengths:
-            block_started = time.monotonic()
             try:
                 run_method_length(args, method, length)
             except Exception as exc:
                 failed = True
                 message = f"{type(exc).__name__}: {exc}"
-                block_elapsed = time.monotonic() - block_started
                 print(f"[method-length-error] method={method} length={length}: {message}", flush=True)
                 traceback.print_exc()
-                append_status(args.status_file, [
-                    method, length, "failed", f"{block_elapsed:.2f}", "", "", 0, "", "", "no",
-                    str(prediction_dir(args, method, length)), message,
-                ])
-                update_report(args)
     return 1 if failed else 0
 
 

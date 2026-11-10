@@ -358,17 +358,13 @@ def ChatGLMBlockPatch(layer, config, layer_idx):
         hidden_states.add_(residual)
         del residual
 
-        # 4) Align with second patch: post-attn LN + MLP chunked
-        n_chunks = max(1, math.ceil(seq_len / 32000))
-        avg_chunk_size = math.ceil(seq_len / n_chunks)
-
-        for start_idx in range(0, seq_len, avg_chunk_size):
-            end_idx = min(seq_len, start_idx + avg_chunk_size)
-
-            part_hidden_states = hidden_states[:, start_idx:end_idx, :].clone()
-            part_hidden_states = self.post_attention_layernorm(part_hidden_states)
-            part_hidden_states = self.mlp(part_hidden_states)
-            hidden_states[:, start_idx:end_idx, :] += part_hidden_states
+        # 4) Align with second patch: post-attn LN + MLP chunked per 1024 tokens
+        for start_idx in range(0, seq_len, 1024):
+            end_idx = min(seq_len, start_idx + 1024)
+            chunk = hidden_states[:, start_idx:end_idx, :]
+            normalized = self.post_attention_layernorm(chunk)
+            mlp_output = self.mlp(normalized)
+            chunk.add_(mlp_output)
 
         return hidden_states, present
 

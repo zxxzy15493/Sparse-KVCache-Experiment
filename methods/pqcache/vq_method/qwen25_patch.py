@@ -378,14 +378,12 @@ def Qwen2DecoderLayerPatch(layer: Qwen2DecoderLayer, config, layer_idx):
         stage_name = 'prefill_postAttn_ffn' if first_time else 'decode_postAttn_ffn'
         hidden_states.add_(residual)
         del(residual)
-        n_chunks = math.ceil(seq_len / 32000)
-        avg_chunk_size = math.ceil(seq_len // n_chunks)
-        for start_idx in range(0, seq_len, avg_chunk_size):
-            end_idx = min(seq_len, start_idx + avg_chunk_size)
-            part_hidden_states = hidden_states[:, start_idx:end_idx, :].clone()
-            part_hidden_states = self.post_attention_layernorm(part_hidden_states)
-            part_hidden_states = self.mlp(part_hidden_states)
-            hidden_states[:, start_idx:end_idx, :] += part_hidden_states
+        for start_idx in range(0, seq_len, 1024):
+            end_idx = min(seq_len, start_idx + 1024)
+            chunk = hidden_states[:, start_idx:end_idx, :]
+            normalized = self.post_attention_layernorm(chunk)
+            mlp_output = self.mlp(normalized)
+            chunk.add_(mlp_output)
         if _SYNC_TEST_TIME:
             stage_end(stage_name, layer_idx)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from benchmarks.common import method_defaults, model_context_length, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 
 def load_model_and_tokenizer(args):
@@ -133,6 +134,8 @@ def load_model_and_tokenizer(args):
     model = model_class.from_pretrained(path, torch_dtype=torch.bfloat16, config=config, **model_kwargs)
     model.patch(config)
     model = model.to(device).eval()
+    if args.model.startswith("qwen3"):
+        enable_chunked_post_ffn(model)
     args._method_args = method_args
     args._cleanup = del_objects if method_args.compressor == "pq_search" else None
     return model, tokenizer

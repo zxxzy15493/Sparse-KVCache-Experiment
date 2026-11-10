@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 
 def _build_method_args(args) -> Namespace:
@@ -55,6 +56,28 @@ def _build_method_args(args) -> Namespace:
     return method_args
 
 
+def _load_efficiency_model(args, method_args, path):
+    """Load Quest's paged-KV model used by its own efficiency benchmark."""
+    if "llama" in method_args.model_name.lower():
+        from quest.models.myllama import LlamaForCausalLM as QuestForCausalLM
+    elif "qwen" in method_args.model_name.lower():
+        from quest.models.qwen2 import Qwen2ForCausalLM as QuestForCausalLM
+    else:
+        raise ValueError(f"Quest efficiency backend does not support model '{args.model}'")
+    device = torch.device(args.device)
+    model = QuestForCausalLM.from_pretrained(
+        path, torch_dtype=torch.float16, low_cpu_mem_usage=True,
+    ).to(device).eval()
+    model.quest_init(
+        page_size=method_args.page_size,
+        max_seq_len=int(args.max_seq_length) + int(args.fixed_output_length) + 512,
+        token_budget=method_args.token_budget,
+        dtype=torch.float16,
+        device=device,
+    )
+    return model
+
+
 def load_model_and_tokenizer(args):
     """Load a Hugging Face model and attach the evaluation Quest attention patch."""
     quest_root = Path(__file__).resolve().parents[1] / "methods" / "quest"
@@ -68,6 +91,13 @@ def load_model_and_tokenizer(args):
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
+
+    if getattr(args, "efficiency_backend", False):
+        model = _load_efficiency_model(args, method_args, path)
+        args._method_args = method_args
+        args._quest_model_type = "efficiency"
+        args._cleanup = None
+        return model, tokenizer
 
     model_name = str(getattr(method_args, "model_name", args.model))
     model_name_lower = model_name.lower()
@@ -97,6 +127,7 @@ def load_model_and_tokenizer(args):
         raise ValueError(f"Quest does not support model_name '{method_args.model_name}'")
 
     enable_quest_attention_eval(model, method_args)
+    enable_chunked_post_ffn(model)
 
     args._method_args = method_args
     args._quest_model_type = model_type

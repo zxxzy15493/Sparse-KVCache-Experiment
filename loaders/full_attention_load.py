@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
+
 
 def load_model_and_tokenizer(args):
     """通过 Transformers 原生模型加载完整注意力。"""
@@ -19,5 +21,6 @@ def load_model_and_tokenizer(args):
         device_map="auto"
     )
     model = model.to(torch.device(args.device)).eval()
+    enable_chunked_post_ffn(model)
     args._cleanup = None
     return model, tokenizer

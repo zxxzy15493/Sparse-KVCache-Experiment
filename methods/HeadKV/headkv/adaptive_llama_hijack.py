@@ -344,8 +344,7 @@ def adaptive_llama_flash_attn2_forward(
     else:
         cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-    key_states = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
+    # NOTE: repeat_kv is deferred — expanded only temporarily for update_kv (prefill) or for cache update (decode, 1 token → negligible); flash attn uses compact K/V
 
     dropout_rate = self.attention_dropout if self.training else 0.0
 
@@ -413,7 +412,10 @@ def adaptive_llama_flash_attn2_forward(
             self.kv_seq_len = kv_seq_len
             if te is not None:
                 te['pref_idx_start'][self.layer_idx].record()
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states)
+            _exp_k = repeat_kv(key_states, self.num_key_value_groups)
+            _exp_v = repeat_kv(value_states, self.num_key_value_groups)
+            key_states_compress, value_states_compress = self.kv_cluster.update_kv(_exp_k, query_states, _exp_v)
+            del _exp_k, _exp_v
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
@@ -448,6 +450,9 @@ def adaptive_llama_flash_attn2_forward(
             cache_kwargs["cu_klen"] = self.kv_cluster.cu_klen
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)
+            if self.num_key_value_groups > 1:
+                key_states = repeat_kv(key_states, self.num_key_value_groups)
+                value_states = repeat_kv(value_states, self.num_key_value_groups)
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
             if tm is not None:
                 tm.record_write_cache_end(self.layer_idx)
@@ -606,8 +611,7 @@ def reason_llama_flash_attn2_forward(
     else:
         cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-    key_states = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
+    # NOTE: repeat_kv is deferred — expanded only temporarily for update_kv (prefill) or for cache update (decode, 1 token → negligible); flash attn uses compact K/V
 
     dropout_rate = self.attention_dropout if self.training else 0.0
 
@@ -664,7 +668,10 @@ def reason_llama_flash_attn2_forward(
             self.kv_seq_len = kv_seq_len
             if te is not None:
                 te['pref_idx_start'][self.layer_idx].record()
-            key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states)
+            _exp_k = repeat_kv(key_states, self.num_key_value_groups)
+            _exp_v = repeat_kv(value_states, self.num_key_value_groups)
+            key_states_compress, value_states_compress = self.kv_cluster.update_kv(_exp_k, query_states, _exp_v)
+            del _exp_k, _exp_v
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)
             past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
@@ -699,6 +706,9 @@ def reason_llama_flash_attn2_forward(
             cache_kwargs["cu_klen"] = self.kv_cluster.cu_klen
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)
+            if self.num_key_value_groups > 1:
+                key_states = repeat_kv(key_states, self.num_key_value_groups)
+                value_states = repeat_kv(value_states, self.num_key_value_groups)
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
             if tm is not None:
                 tm.record_write_cache_end(self.layer_idx)
@@ -830,4 +840,10 @@ def prepare_inputs_for_generation_llama(
     )
     if num_logits_to_keep is not None:
         model_inputs["num_logits_to_keep"] = num_logits_to_keep
+        model_inputs["logits_to_keep"] = num_logits_to_keep
+    else:
+        # Force logits_to_keep=1 during prefill — only compute the last logit,
+        # avoiding the full [bsz,seq,vocab] tensor (~2004MiB at seq=8192)
+        model_inputs["num_logits_to_keep"] = 1
+        model_inputs["logits_to_keep"] = 1
     return model_inputs

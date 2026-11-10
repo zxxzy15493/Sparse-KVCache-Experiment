@@ -41,6 +41,12 @@ METHODS = ("full_attention", "topk", "topk32", "topp", "topp32", "pqcache", "clu
            "h2o", "keyformer", "snapkv", "streaming","quest","sparq","xattention","flexprefill", "minference", "retroinfer", "magicpig",
            "headkv", "adakv", "cakekv", "duo-attention", "pyramidkv")
 PQ_METHODS = frozenset({"topk", "topk32", "topp", "topp32", "pqcache"})
+BASELINE_METHODS = ("full_attention", "topk", "topp")
+EFFICIENCY_METHODS = BASELINE_METHODS + (
+    "h2o", "keyformer", "snapkv", "streaming", "pyramidkv", "headkv", "adakv",
+    "cakekv", "duo-attention", "flexprefill", "minference", "pqcache", "quest",
+    "retroinfer", "sparq", "xattention", "clusterkv", "magicpig",
+)
 FIXED_BUDGET_METHODS = PQ_METHODS | {"full_attention"}
 
 

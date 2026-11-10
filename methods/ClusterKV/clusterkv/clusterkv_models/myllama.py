@@ -659,10 +659,13 @@ class MyLlamaDecoderLayer(nn.Module):
         hidden_states = residual + attn_output
 
         # --- MLP ---
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self._mlp_forward(hidden_states)
-        hidden_states = residual + hidden_states
+        seq_len = hidden_states.shape[1]
+        for start in range(0, seq_len, 1024):
+            end = min(start + 1024, seq_len)
+            chunk = hidden_states[:, start:end, :]
+            normalized = self.post_attention_layernorm(chunk)
+            mlp_output = self._mlp_forward(normalized)
+            chunk.add_(mlp_output)
         stage_end(f"{prefix}_post_ffn", self.layer_idx)
 
         outputs = (hidden_states,)

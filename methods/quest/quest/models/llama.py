@@ -148,16 +148,15 @@ class LlamaDecoderLayer(nn.Module):
     torch.cuda.nvtx.range_pop()
     hidden_states = residual + hidden_states
 
-    residual = hidden_states
-    torch.cuda.nvtx.range_push("norm")
-    hidden_states = self.post_attention_layernorm(hidden_states)
+    torch.cuda.nvtx.range_push("norm_mlp")
+    seq_len = hidden_states.shape[1]
+    for start in range(0, seq_len, 1024):
+        end = min(start + 1024, seq_len)
+        chunk = hidden_states[:, start:end, :]
+        normalized = self.post_attention_layernorm(chunk)
+        mlp_output = self.mlp(normalized)
+        chunk.add_(mlp_output)
     torch.cuda.nvtx.range_pop()
-
-    torch.cuda.nvtx.range_push("mlp")
-    hidden_states = self.mlp(hidden_states)
-    torch.cuda.nvtx.range_pop()
-    
-    hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
 

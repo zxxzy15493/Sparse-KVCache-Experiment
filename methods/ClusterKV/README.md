@@ -43,6 +43,9 @@ bash setup.sh
 popd
 ```
 
+如需为不同 GPU 构建 kernel，可设置 `CUDAARCHS`。例如 RTX A6000（sm_86）使用
+`CUDAARCHS=86 bash setup.sh`。
+
 4. Install the package
 
 ```bash

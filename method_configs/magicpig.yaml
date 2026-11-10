@@ -175,3 +175,41 @@ budget-4096:
     ruler-65536:
       K: 8
       L: 88
+    # SCBench Qwen2.5-7B-Instruct-1M: first 2 samples, all turns, max_new_tokens=16.
+    # Target avg_sampled_tokens = 4096 +/- 200; validated on the HF GPU backend.
+    scbench_kv:
+      K: 9
+      L: 97
+    scbench_prefix_suffix:
+      K: 9
+      L: 124
+    scbench_vt:
+      K: 9
+      L: 110
+    scbench_repoqa:
+      K: 8
+      L: 84
+    scbench_qa_eng:
+      K: 9
+      L: 102
+    scbench_qa_chn:
+      K: 9
+      L: 116
+    scbench_choice_eng:
+      K: 9
+      L: 105
+    scbench_many_shot:
+      K: 8
+      L: 152
+    scbench_summary:
+      K: 9
+      L: 120
+    scbench_mf:
+      K: 9
+      L: 106
+    scbench_summary_with_needles:
+      K: 9
+      L: 124
+    scbench_repoqa_and_kv:
+      K: 8
+      L: 82

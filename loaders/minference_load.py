@@ -1,4 +1,5 @@
 from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 import torch    
 import sys
@@ -50,4 +51,6 @@ def load_model_and_tokenizer(args):
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    enable_chunked_post_ffn(model)
+
     return model, tokenizer

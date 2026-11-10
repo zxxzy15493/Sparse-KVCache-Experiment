@@ -1,1 +1,1 @@
-"""Reporting, smoke runs and regression tests for the benchmark."""
+"""效率与显存测试工具。"""
