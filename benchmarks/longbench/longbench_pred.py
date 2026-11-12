@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -201,6 +202,11 @@ def run(args: argparse.Namespace) -> list[Path]:
             completed = sum(1 for _ in path.open(encoding="utf-8")) if path.exists() else 0
             if completed >= len(data):
                 paths.append(path)
+                if args.method == "magicpig":
+                    model = None
+                    tokenizer = None
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 continue
             with path.open("a", encoding="utf-8") as handle:
                 for item in tqdm(data.select(range(completed, len(data))), desc=dataset):
@@ -230,11 +236,16 @@ def run(args: argparse.Namespace) -> list[Path]:
                     handle.flush()
             paths.append(path)
             if args.method == "magicpig":
-                del model, tokenizer
+                model = None
+                tokenizer = None
+                gc.collect()
+                torch.cuda.empty_cache()
     finally:
         if getattr(args, "_cleanup", None):
             args._cleanup()
-        del model, tokenizer
+        model = None
+        tokenizer = None
+        gc.collect()
         torch.cuda.empty_cache()
     return paths
 

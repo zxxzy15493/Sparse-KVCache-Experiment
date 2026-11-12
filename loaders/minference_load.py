@@ -1,10 +1,12 @@
-from benchmarks.common import method_defaults, parse_set
-from loaders.chunked_post_ffn import enable_chunked_post_ffn
-
-import torch    
 import sys
 from argparse import Namespace
 from pathlib import Path
+
+import torch
+
+from benchmarks.common import method_defaults, parse_set
+from loaders.chunked_post_ffn import enable_chunked_post_ffn
+
 
 def load_model_and_tokenizer(args):
     """Load model with MInference sparse attention patch."""

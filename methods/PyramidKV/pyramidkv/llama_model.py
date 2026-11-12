@@ -322,6 +322,9 @@ def llama_flash_attn2_forward_PyramidKV(
         self, "num_key_value_groups", self.num_heads // self.num_key_value_heads
     )
     self.hidden_size = getattr(self, "hidden_size", self.config.hidden_size)
+    # 4.57 compat: the decoder layer passes 'past_key_values' (new name),
+    # but this function's parameter is 'past_key_value' (old name).
+    past_key_value = kwargs.get("past_key_values", past_key_value)
     # LlamaFlashAttention2 attention does not support output_attentions
     if "padding_mask" in kwargs:
         warnings.warn(
@@ -364,9 +367,9 @@ def llama_flash_attn2_forward_PyramidKV(
             if self.kv_seq_len != 0:
                 kv_seq_len += self.kv_seq_len
             else:
-                kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+                kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
         else:
-            kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+            kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
 
     position_embeddings = kwargs.get("position_embeddings")
     if position_embeddings is None:
@@ -576,8 +579,14 @@ def prepare_inputs_for_generation_llama_new(
                 "attention_mask": attention_mask,
             }
         )
+        # Translate num_logits_to_keep → logits_to_keep (the actual CausalLM.forward arg in 4.57+),
+        # and force logits_to_keep=1 during prefill to avoid the full [bsz,seq,vocab] logits tensor.
         if num_logits_to_keep is not None:
             model_inputs["num_logits_to_keep"] = num_logits_to_keep
+            model_inputs["logits_to_keep"] = num_logits_to_keep
+        else:
+            model_inputs["num_logits_to_keep"] = 1
+            model_inputs["logits_to_keep"] = 1
         return model_inputs
 
 

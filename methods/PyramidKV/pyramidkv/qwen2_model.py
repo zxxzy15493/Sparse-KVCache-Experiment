@@ -398,11 +398,11 @@ def prepare_inputs_for_generation_qwen2(
         if isinstance(past_key_values, Cache):
             # Use kv_seq_len (original prefill length) instead of get_seq_length() (compressed length)
             # to properly slice input_ids
-            past_length = self.model.layers[0].self_attn.kv_seq_len
+            past_length = getattr(self.model.layers[0].self_attn, 'kv_seq_len', 0)
             cache_length = past_key_values.get_seq_length()
             max_cache_length = past_key_values.get_max_length() if hasattr(past_key_values, "get_max_length") else None
         else:
-            cache_length = past_length = self.model.layers[0].self_attn.kv_seq_len
+            cache_length = past_length = getattr(self.model.layers[0].self_attn, 'kv_seq_len', 0)
             max_cache_length = None
         if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
             input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
@@ -436,6 +436,12 @@ def prepare_inputs_for_generation_qwen2(
             "attention_mask": attention_mask,
         }
     )
+    # Translate num_logits_to_keep → logits_to_keep (the actual CausalLM.forward arg in 4.57+),
+    # and force logits_to_keep=1 during prefill to avoid the full [bsz,seq,vocab] logits tensor.
     if num_logits_to_keep is not None:
         model_inputs["num_logits_to_keep"] = num_logits_to_keep
+        model_inputs["logits_to_keep"] = num_logits_to_keep
+    else:
+        model_inputs["num_logits_to_keep"] = 1
+        model_inputs["logits_to_keep"] = 1
     return model_inputs

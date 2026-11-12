@@ -370,49 +370,25 @@ def llama_duo_attention_forward_one_way_reordered(
             tm.record_dec_pure_start(self.layer_idx)
 
     if q_len == kv_seq_len:
-        # prefill: full heads attend over the whole sequence (causal); the
-        # streaming heads must only attend to sink + recent (dual-end window),
-        # so route them through _duo_streaming_window_attn instead of the full
-        # causal kernel. This keeps the algorithm identical to training.
-        if self.num_full_attn_head > 0:
-            full_query_states = query_states[:, :, : self.num_full_query_head, :]
-            if _duo_should_use_sdpa():
-                # de-kernel: native SDPA (ablation)
-                attn_output_full = sdpa_attn(
-                    full_query_states, full_key_states, full_value_states,
-                    self.num_full_query_head, is_causal=True,
-                )
-            else:
-                # original: flash_attn_func
-                attn_output_full = flash_attn_func(
-                    full_query_states,
-                    full_key_states,
-                    full_value_states,
-                    causal=True,
-                    dropout_p=0.0,
-                )
-        else:
-            attn_output_full = None
-
-        if self.num_streaming_attn_head > 0:
-            streaming_query_states = query_states[:, :, self.num_full_query_head :, :]
-            attn_output_streaming = _duo_streaming_window_attn(
-                streaming_query_states,
-                streaming_key_states,
-                streaming_value_states,
-                self.sink_size,
-                self.recent_size,
+        # prefill: all heads attend over the whole sequence (causal),
+        # matching the original DuoAttention semantics (flash_attn_func
+        # for every head). Streaming-head specific routing (sink+recent)
+        # is only applied during decode; during prefill every head sees
+        # the full context so that the KV cache is populated correctly.
+        if _duo_should_use_sdpa():
+            # de-kernel: native SDPA (ablation)
+            attn_output = sdpa_attn(
+                query_states, key_states, value_states,
+                self.num_heads, is_causal=True,
             )
         else:
-            attn_output_streaming = None
-
-        if attn_output_full is None:
-            attn_output = attn_output_streaming
-        elif attn_output_streaming is None:
-            attn_output = attn_output_full
-        else:
-            attn_output = torch.cat(
-                [attn_output_full, attn_output_streaming], dim=2
+            # original: flash_attn_func
+            attn_output = flash_attn_func(
+                query_states,
+                key_states,
+                value_states,
+                causal=True,
+                dropout_p=0.0,
             )
     else:
         # decoding or continous filling

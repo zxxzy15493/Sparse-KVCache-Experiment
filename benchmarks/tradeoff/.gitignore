@@ -1,0 +1,7 @@
+data/
+pred/
+logs/
+state/
+status/
+results/
+__pycache__/

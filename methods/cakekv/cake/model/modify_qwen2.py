@@ -128,6 +128,11 @@ def qwen2_attn_forward_cake(
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
         key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+    # Save compact key/value before GQA expansion for later flash-attn use.
+    # flash_attn_func handles GQA natively, so expanding to full-head counts
+    # wastes memory in the outer scope.
+    key_states_compact = key_states
+    value_states_compact = value_states
     # repeat k/v heads if n_kv_heads < n_heads
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -145,7 +150,6 @@ def qwen2_attn_forward_cake(
 
         tmp_attn_weights[:, :, -self.config.window_size[self.layer_idx]:, -self.config.window_size[self.layer_idx]:] += tmp_attention_mask
         tmp_attn_weights = nn.functional.softmax(tmp_attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        # tmp_attn_weights = nn.functional.softmax(tmp_attn_weights, dim=-1, dtype=torch.float64)
 
         disp = calculate_entropy(tmp_attn_weights[:,:,-self.config.window_size[self.layer_idx]:,:-self.config.window_size[self.layer_idx]])
         var = torch.var(tmp_attn_weights[:,:,-self.config.window_size[self.layer_idx]:,:-self.config.window_size[self.layer_idx]],dim=-2).sum(0).sum(0).sum(0)
@@ -180,6 +184,9 @@ def qwen2_attn_forward_cake(
 
         past_key_value = self.config.decoding_evict[self.layer_idx](past_key_value, tmp_attn_weights, self.layer_idx)
     
+    # Free the expanded (repeat_kv-ed) key/value; scoring blocks above have
+    # finished. For flash attention we use the compact GQA tensors.
+    del key_states, value_states
 
     # In PEFT, usually we cast the layer norms in float32 for training stability reasons
     # therefore the input hidden states gets silently casted in float32. Hence, we need
@@ -201,13 +208,14 @@ def qwen2_attn_forward_cake(
         )
 
         query_states = query_states.to(target_dtype)
-        key_states = key_states.to(target_dtype)
-        value_states = value_states.to(target_dtype)
+        key_states_compact = key_states_compact.to(target_dtype)
+        value_states_compact = value_states_compact.to(target_dtype)
 
     # Reashape to the expected shape for Flash Attention
     query_states = query_states.transpose(1, 2)
-    key_states = key_states.transpose(1, 2)
-    value_states = value_states.transpose(1, 2)
+    key_states = key_states_compact.transpose(1, 2)
+    value_states = value_states_compact.transpose(1, 2)
+    del key_states_compact, value_states_compact
 
     if (
         self.config.use_sliding_window
@@ -229,16 +237,23 @@ def qwen2_attn_forward_cake(
     if q_len == 1:
         attn_form = os.environ.get("CAKEKV_ATTN_FORM", "0")
     if attn_form == "1":
+        # SDPA needs expanded (full-head) KV; expand temporarily
+        _key_exp = repeat_kv(key_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
+        _val_exp = repeat_kv(value_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
         attn_output = sdpa_decode_with_form(
-            query_states, key_states, value_states, attention_mask,
-            key_states.shape[1], sliding_window=sliding_window,
+            query_states, _key_exp, _val_exp, attention_mask,
+            _key_exp.shape[1], sliding_window=sliding_window,
         )
+        del _key_exp, _val_exp
     elif attn_form == "2":
+        _key_exp = repeat_kv(key_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
+        _val_exp = repeat_kv(value_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
         attn_output = sdpa_decode_with_form(
-            query_states, key_states, value_states, attention_mask,
-            global_kv_len(past_key_value, key_states.shape[1]),
+            query_states, _key_exp, _val_exp, attention_mask,
+            global_kv_len(past_key_value, _key_exp.shape[1]),
             sliding_window=sliding_window,
         )
+        del _key_exp, _val_exp
     else:
         attn_output = _flash_attention_forward(
             query_states,
