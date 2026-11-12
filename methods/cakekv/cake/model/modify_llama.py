@@ -111,12 +111,6 @@ def llama_attn_forward_cake(
         if time_manager is not None:
             time_manager.record_write_cache_end(self.layer_idx)
 
-    # Save compact key/value before GQA expansion for later flash-attn use.
-    # flash_attn_func handles GQA natively (grouped-query attention with
-    # num_kv_heads < num_q_heads), so expanding to full-head counts wastes
-    # memory in the outer scope.
-    key_states_compact = key_states
-    value_states_compact = value_states
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
     dropout_rate = 0.0 if not self.training else self.attention_dropout
@@ -180,16 +174,12 @@ def llama_attn_forward_cake(
         if time_manager is not None:
             time_manager.record_retrieve_end(self.layer_idx)
     
-    # Free the expanded (repeat_kv-ed) key/value; scoring blocks above have
-    # finished. For flash attention we use the compact GQA tensors.
-    del key_states, value_states
 
     # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
     # to be able to avoid many of these transpose/reshape/view.
     query_states = query_states.transpose(1, 2)
-    key_states = key_states_compact.transpose(1, 2)
-    value_states = value_states_compact.transpose(1, 2)
-    del key_states_compact, value_states_compact
+    key_states = key_states.transpose(1, 2)
+    value_states = value_states.transpose(1, 2)
 
     dropout_rate = self.attention_dropout if self.training else 0.0
 
@@ -233,23 +223,16 @@ def llama_attn_forward_cake(
     if q_len == 1:
         attn_form = os.environ.get("CAKEKV_ATTN_FORM", "0")
     if attn_form == "1":
-        # SDPA needs expanded (full-head) KV; expand temporarily
-        _key_exp = repeat_kv(key_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
-        _val_exp = repeat_kv(value_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
         attn_output = sdpa_decode_with_form(
-            query_states, _key_exp, _val_exp, attention_mask,
-            _key_exp.shape[1], sliding_window=_sliding_window,
+            query_states, key_states, value_states, attention_mask,
+            key_states.shape[1], sliding_window=_sliding_window,
         )
-        del _key_exp, _val_exp
     elif attn_form == "2":
-        _key_exp = repeat_kv(key_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
-        _val_exp = repeat_kv(value_states.transpose(1, 2), self.num_key_value_groups).transpose(1, 2)
         attn_output = sdpa_decode_with_form(
-            query_states, _key_exp, _val_exp, attention_mask,
-            global_kv_len(past_key_value, _key_exp.shape[1]),
+            query_states, key_states, value_states, attention_mask,
+            global_kv_len(past_key_value, key_states.shape[1]),
             sliding_window=_sliding_window,
         )
-        del _key_exp, _val_exp
     else:
         attn_output = _flash_attention_forward(
             query_states,
@@ -258,7 +241,7 @@ def llama_attn_forward_cake(
             attention_mask,
             q_len,
             dropout=dropout_rate,
-            sliding_window=_sliding_window,
+            sliding_window=getattr(self, "sliding_window", None),
             use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
             is_causal=self.is_causal,
         )
