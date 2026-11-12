@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在一个模型/方法/batch 进程中复用权重，逐个测试输入长度。"""
+"""对一个模型/方法/batch/budget 加载一次模型，逐个测试输入长度。"""
 
 from __future__ import annotations
 
@@ -68,6 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--efficiency-backend", action="store_true",
                         help="用 Quest/ClusterKV 自带的效率实现（仅效率脚本）。")
+    parser.add_argument("--serial-prefill", choices=("auto", "on", "off"), default="auto",
+                        help="batch 测试时逐条串行 prefill（decode 仍按 batch）："
+                             "auto 只对已知安全的方法启用，on 额外启用需合并模块状态的方法，off 保持批量 prefill。")
+    parser.add_argument("--serial-prefill-verify", action="store_true",
+                        help="每个长度首次测量时用批量 prefill 做对照，核对串行 prefill 的 token 是否一致。")
     return parser.parse_args()
 
 
@@ -99,6 +104,8 @@ def make_base_args(args: argparse.Namespace) -> argparse.Namespace:
         experiment=args.experiment,
         output_root=args.output_root,
         efficiency_backend=args.efficiency_backend,
+        serial_prefill=args.serial_prefill,
+        serial_prefill_verify=args.serial_prefill_verify,
         dataset="ruler",
     )
 
@@ -116,8 +123,10 @@ def write_cell_log(path: Path, row: dict, details: str = "") -> None:
     lines = [
         f"model={row.get('model')}",
         f"method={row.get('method')}",
+        f"budget={row.get('budget')}",
         f"batch_size={row.get('batch_size')}",
         f"input_length={row.get('input_length')}",
+        f"prefill_mode={row.get('prefill_mode', '')}",
         f"status={row.get('status')}",
         f"elapsed_s={row.get('elapsed_s')}",
         f"error={row.get('error', '')}",
@@ -126,6 +135,28 @@ def write_cell_log(path: Path, row: dict, details: str = "") -> None:
         lines.extend(["", details])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def prefill_summary(records: list[dict]) -> dict:
+    """把每个 batch 的 prefill 模式与对照结果汇总成单元格层面的字段。"""
+    summary = {}
+    modes = sorted({str(record.get("prefill_mode")) for record in records
+                    if record.get("prefill_mode")})
+    if modes:
+        summary["prefill_mode"] = ",".join(modes)
+    fallbacks = sorted({str(record["serial_prefill_fallback"]) for record in records
+                        if record.get("serial_prefill_fallback")})
+    if fallbacks:
+        summary["serial_prefill_fallback"] = " | ".join(fallbacks)[:400]
+    verifies = sorted({str(record["serial_prefill_verify"]) for record in records
+                       if record.get("serial_prefill_verify")})
+    if verifies:
+        summary["serial_prefill_verify"] = ",".join(verifies)
+    mismatches = [record["serial_prefill_mismatch_tokens"] for record in records
+                  if record.get("serial_prefill_mismatch_tokens")]
+    if mismatches:
+        summary["serial_prefill_mismatch_tokens"] = int(sum(mismatches))
+    return summary
 
 
 def record_status(history_file: Path, row: dict) -> None:
@@ -163,7 +194,7 @@ def run_cell(
         / "logs"
         / model_alias(args.model)
         / args.method
-        / f"b{batch_size}_i{input_length}.log"
+        / f"k{args.budget}_b{batch_size}_i{input_length}.log"
     )
     current_cell_path = args.state_dir / "current_cell.txt"
     started = time.monotonic()
@@ -171,6 +202,7 @@ def run_cell(
     current_cell = {
         "model": args.model,
         "method": args.method,
+        "budget": args.budget,
         "batch_size": batch_size,
         "input_length": input_length,
         "started_at": started_at,
@@ -183,6 +215,7 @@ def run_cell(
         "model": args.model,
         "model_alias": model_alias(args.model),
         "method": args.method,
+        "budget": args.budget,
         "batch_size": batch_size,
         "input_length": input_length,
         "output_length": args.output_length,
@@ -243,16 +276,26 @@ def run_cell(
                     batch_index + 1,
                     input_length,
                     args.output_length,
+                    prefill_mode=record.get("prefill_mode"),
+                    budget=args.budget,
                 )
             )
 
             print(
                 f"Batch {batch_index + 1}/{len(batches)}: "
+                f"prefill={record.get('prefill_mode')}, "
                 f"ttft_s={format_number(record.get('ttft_s'))}, "
                 f"tpot_ms={format_number(record.get('tpot_ms'))}, "
                 f"peak_allocated_mib={format_number(record.get('peak_allocated_mib'))}",
                 flush=True,
             )
+            if record.get("serial_prefill_fallback"):
+                print(f"Serial prefill 回退到批量 prefill：{record['serial_prefill_fallback']}",
+                      flush=True)
+            if record.get("serial_prefill_verify"):
+                print(f"Serial prefill 对照：{record.get('serial_prefill_verify')} "
+                      f"mismatch_tokens={record.get('serial_prefill_mismatch_tokens')}",
+                      flush=True)
 
         summary = summarize(records)
         row.update(metrics_from_summary(
@@ -284,6 +327,7 @@ def run_cell(
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, original_handler)
+        row.update(prefill_summary(records))
         row["elapsed_s"] = round(time.monotonic() - started, 2)
         row.update(round_floats(row))
         row["round_measurements"] = round_floats(
@@ -302,25 +346,23 @@ def run_cell(
 
 def mark_unsupported_batch_cells(
     args: argparse.Namespace,
-    input_lengths: list[int],
     reason: str,
 ) -> None:
     history_file = method_history_path(
         args.output_root,
         args.model,
-        args.experiment,
         args.method,
-        args.task,
     )
     rows = read_history_state(history_file, args.model, args.method)
-    for input_length in input_lengths:
-        key = cell_key(args.model, args.method, args.batch_size, input_length)
+    for input_length in args.input_lengths:
+        key = cell_key(args.model, args.method, args.budget, args.batch_size, input_length)
         if key in rows:
             continue
         row = {
             "model": args.model,
             "model_alias": model_alias(args.model),
             "method": args.method,
+            "budget": args.budget,
             "batch_size": args.batch_size,
             "input_length": input_length,
             "output_length": args.output_length,
@@ -340,14 +382,12 @@ def mark_setup_failure(
     history_file = method_history_path(
         args.output_root,
         args.model,
-        args.experiment,
         args.method,
-        args.task,
     )
-    rows = read_history_state(history_file, args.model, args.method)
+    rows = read_history_state(history_file, args.model, args.method, args.budget)
     pending = []
     for input_length in input_lengths:
-        key = cell_key(args.model, args.method, args.batch_size, input_length)
+        key = cell_key(args.model, args.method, args.budget, args.batch_size, input_length)
         if key not in rows:
             pending.append(input_length)
 
@@ -364,6 +404,7 @@ def mark_setup_failure(
             "model": args.model,
             "model_alias": model_alias(args.model),
             "method": args.method,
+            "budget": args.budget,
             "batch_size": args.batch_size,
             "input_length": input_length,
             "output_length": args.output_length,
@@ -378,6 +419,8 @@ def mark_setup_failure(
 
 def main() -> None:
     args = parse_args()
+    if not args.input_lengths:
+        raise ValueError("input_lengths 必须至少包含一个值。")
     args.data_file = args.data_file.resolve()
     args.output_root = args.output_root.resolve()
     args.state_dir = args.state_dir.resolve()
@@ -389,13 +432,11 @@ def main() -> None:
     history_file = method_history_path(
         args.output_root,
         args.model,
-        args.experiment,
         args.method,
-        args.task,
     )
     current_cell_path = args.state_dir / "current_cell.txt"
 
-    existing_rows = read_history_state(history_file, args.model, args.method)
+    existing_rows = read_history_state(history_file, args.model, args.method, args.budget)
     existing_unsupported = next(
         (
             row
@@ -412,17 +453,12 @@ def main() -> None:
             f"此前 batch={args.batch_size}、input={existing_unsupported.get('input_length')} "
             f"检测到不支持多 batch：{existing_unsupported.get('error', '')}"
         )
-        missing_lengths = [
-            input_length
-            for input_length in args.input_lengths
-            if cell_key(args.model, args.method, args.batch_size, input_length) not in existing_rows
-        ]
-        mark_unsupported_batch_cells(args, missing_lengths, reason)
+        mark_unsupported_batch_cells(args, reason)
         return
 
-    pending = []
+    pending_lengths = []
     for input_length in args.input_lengths:
-        key = cell_key(args.model, args.method, args.batch_size, input_length)
+        key = cell_key(args.model, args.method, args.budget, args.batch_size, input_length)
         if key in existing_rows:
             continue
         if dominated_failure(
@@ -431,14 +467,14 @@ def main() -> None:
             input_length,
         ):
             continue
-        pending.append(input_length)
-    if not pending:
+        pending_lengths.append(input_length)
+    if not pending_lengths:
         print("这个 batch 的组合均已完成或被 OOM/timeout 阈值覆盖。", flush=True)
         return
 
     print(
         f"加载一次模型：{args.model} / {args.method} / batch={args.batch_size}；"
-        f"待测长度={pending}",
+        f"budget={args.budget}，待测长度={pending_lengths}",
         flush=True,
     )
     try:
@@ -450,7 +486,7 @@ def main() -> None:
             flush=True,
         )
     except Exception:
-        mark_setup_failure(args, pending, traceback.format_exc())
+        mark_setup_failure(args, pending_lengths, traceback.format_exc())
         try:
             current_cell_path.unlink()
         except FileNotFoundError:
@@ -458,9 +494,9 @@ def main() -> None:
         return
 
     try:
-        for input_index, input_length in enumerate(args.input_lengths):
-            current_rows = read_history_state(history_file, args.model, args.method)
-            key = cell_key(args.model, args.method, args.batch_size, input_length)
+        for input_length in args.input_lengths:
+            current_rows = read_history_state(history_file, args.model, args.method, args.budget)
+            key = cell_key(args.model, args.method, args.budget, args.batch_size, input_length)
             if key in current_rows:
                 continue
 
@@ -474,6 +510,7 @@ def main() -> None:
                     "model": args.model,
                     "model_alias": model_alias(args.model),
                     "method": args.method,
+                    "budget": args.budget,
                     "batch_size": args.batch_size,
                     "input_length": input_length,
                     "output_length": args.output_length,
@@ -505,17 +542,13 @@ def main() -> None:
                     f"batch={args.batch_size}、input={input_length} 检测到方法不支持多 batch："
                     f"{row.get('error', '')}"
                 )
-                mark_unsupported_batch_cells(
-                    args,
-                    args.input_lengths[input_index + 1:],
-                    reason,
-                )
+                mark_unsupported_batch_cells(args, reason)
                 break
 
     finally:
+        del model
         if options._cleanup is not None:
             options._cleanup()
-        del model
         del tokenizer
         clear_cuda_state(devices)
 

@@ -177,23 +177,25 @@ def round_measurement_records(measurements: list[dict]) -> list[dict]:
     ]
 
 
-def cell_key(model: str, method: str, batch_size: int, input_length: int) -> str:
-    return f"{model}\t{method}\t{batch_size}\t{input_length}"
+def cell_key(
+    model: str,
+    method: str,
+    budget: int,
+    batch_size: int,
+    input_length: int,
+) -> str:
+    return f"{model}\t{method}\t{budget}\t{batch_size}\t{input_length}"
 
 
 def method_history_path(
     output_root: Path,
     model: str,
-    experiment: str,
     method: str,
-    task: str,
 ) -> Path:
     return (
         output_root
         / model_alias(model)
-        / experiment
         / method
-        / task
         / "history.csv"
     )
 
@@ -202,6 +204,7 @@ HISTORY_FIELDS = [
     "record_type",
     "round_index",
     "method",
+    "budget",
     "batch_size",
     "input_length",
     "output_length",
@@ -223,6 +226,7 @@ HISTORY_FIELDS = [
 
 AVERAGE_FIELDS = [
     "method",
+    "budget",
     "batch_size",
     "input_length",
     "latest_status",
@@ -253,6 +257,7 @@ def measurement_history_row(event: dict, measurement: dict, round_index: int) ->
         "record_type": "measurement",
         "round_index": measurement.get("round_index", round_index),
         "method": event.get("method"),
+        "budget": event.get("budget", 1024),
         "batch_size": measurement.get("batch_size", event.get("batch_size")),
         "input_length": measurement.get("input_length", event.get("input_length")),
         "output_length": event.get("output_length"),
@@ -314,7 +319,13 @@ def _read_history_rows(path: Path) -> list[dict]:
         return []
 
     rows = []
-    integer_fields = {"round_index", "batch_size", "input_length", "output_length"}
+    integer_fields = {
+        "round_index",
+        "budget",
+        "batch_size",
+        "input_length",
+        "output_length",
+    }
     float_fields = {
         "ttft_ms",
         "tpot_ms",
@@ -333,6 +344,8 @@ def _read_history_rows(path: Path) -> list[dict]:
             for field in integer_fields:
                 value = row.get(field)
                 row[field] = int(value) if value not in (None, "") else None
+            if row.get("budget") is None:
+                row["budget"] = 1024
             for field in float_fields:
                 value = row.get(field)
                 row[field] = float(value) if value not in (None, "") else None
@@ -348,18 +361,30 @@ def _read_history_rows(path: Path) -> list[dict]:
     return rows
 
 
-def read_history_state(path: Path, model: str, method: str) -> dict[str, dict]:
+def read_history_state(
+    path: Path,
+    model: str,
+    method: str,
+    budget: int | None = None,
+) -> dict[str, dict]:
     history_rows = _read_history_rows(path)
-    unsupported_seen = any(row.get("status") == "unsupported_batch" for row in history_rows)
+    unsupported_budgets = {
+        row.get("budget", 1024)
+        for row in history_rows
+        if row.get("status") == "unsupported_batch"
+    }
     latest_by_key = {}
     measurements_by_key: dict[str, list[dict]] = defaultdict(list)
 
     for row in history_rows:
         if row.get("method") not in (None, "", method):
             continue
+        row_budget = row.get("budget", 1024)
+        if budget is not None and row_budget != budget:
+            continue
         if (
             row.get("status") == "skipped_unsupported_batch"
-            and not unsupported_seen
+            and row_budget not in unsupported_budgets
         ):
             continue
 
@@ -368,7 +393,8 @@ def read_history_state(path: Path, model: str, method: str) -> dict[str, dict]:
         if batch_size is None or input_length is None:
             continue
 
-        key = cell_key(model, method, batch_size, input_length)
+        row["budget"] = row_budget
+        key = cell_key(model, method, row_budget, batch_size, input_length)
         row["model"] = model
         row["method"] = method
         latest_by_key[key] = row
@@ -442,6 +468,7 @@ def average_attempts(measurements: list[dict], latest: dict) -> dict:
     }
     result = {
         "method": latest.get("method"),
+        "budget": latest.get("budget", 1024),
         "batch_size": latest.get("batch_size"),
         "input_length": latest.get("input_length"),
         "latest_status": latest.get("status"),
@@ -458,14 +485,18 @@ def average_attempts(measurements: list[dict], latest: dict) -> dict:
 
 def save_average_csv(history_path: Path) -> None:
     history_rows = _read_history_rows(history_path)
-    unsupported_seen = any(row.get("status") == "unsupported_batch" for row in history_rows)
+    unsupported_budgets = {
+        row.get("budget", 1024)
+        for row in history_rows
+        if row.get("status") == "unsupported_batch"
+    }
     latest_by_key = {}
-    measurements_by_key: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    measurements_by_key: dict[tuple[int, int, int], list[dict]] = defaultdict(list)
 
     for row in history_rows:
         if (
             row.get("status") == "skipped_unsupported_batch"
-            and not unsupported_seen
+            and row.get("budget", 1024) not in unsupported_budgets
         ):
             continue
         batch_size = row.get("batch_size")
@@ -473,7 +504,8 @@ def save_average_csv(history_path: Path) -> None:
         if batch_size is None or input_length is None:
             continue
 
-        key = (batch_size, input_length)
+        budget = row.get("budget", 1024)
+        key = (budget, batch_size, input_length)
         latest_by_key[key] = row
         if row.get("record_type") == "measurement":
             measurements_by_key[key].append(row)
@@ -495,8 +527,6 @@ def save_method_averages(args, models: list[str] | None = None, methods: list[st
             history_path = method_history_path(
                 args.output_root,
                 model,
-                args.experiment,
                 method,
-                args.task,
             )
             save_average_csv(history_path)

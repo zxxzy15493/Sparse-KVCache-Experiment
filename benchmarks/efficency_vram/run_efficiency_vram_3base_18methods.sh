@@ -29,12 +29,12 @@ METHODS=(
   adakv
   cakekv
   duo-attention
-  # flexprefill
+  flexprefill
   minference
   pqcache
   quest
   retroinfer
-  # sparq
+  sparq
   xattention
   clusterkv
   magicpig
