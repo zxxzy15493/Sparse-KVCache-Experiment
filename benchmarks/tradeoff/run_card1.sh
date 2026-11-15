@@ -25,28 +25,49 @@ budgets=(
 )
 
 llama_methods=(
-    # streaming
-    # pyramidkv
+    topk
+    pqcache
+    snapkv
+    retroinfer
     cakekv
-    quest
+    clusterkv
+    headkv
+    adakv
+    # magicpig
+    # h2o
+    streaming
+    pyramidkv
     sparq
     pqcache
-    keyformer
+    headkv
+    quest
+    # keyformer
 )
 qwen_methods=(
-    topk
-    snapkv
-    cakekv
-    retroinfer
-    clusterkv
-    adakv
-    magicpig
-    h2o
+    # topk
+    # pqcache
+    # snapkv
+    # retroinfer
+    # cakekv
+    # clusterkv
+    # headkv
+    # adakv
+    # # magicpig
+    # h2o
+    # streaming
+    # pyramidkv
+    # sparq
+    # pqcache
+    # headkv
+    # quest
+    # keyformer
 )
 
 export CUDA_VISIBLE_DEVICES="$gpu"
 export RULER_BENCHMARK_ROOT="$script_dir/data"
 export RULER_BENCHMARK_PRED_ROOT="$script_dir/pred"
+export SUBVEC=4
+export SUBBITS=8
 
 for model in "${models[@]}"; do
     case "$model" in

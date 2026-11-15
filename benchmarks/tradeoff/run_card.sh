@@ -47,6 +47,8 @@ qwen_methods=(
 export CUDA_VISIBLE_DEVICES="$gpu"
 export RULER_BENCHMARK_ROOT="$script_dir/data"
 export RULER_BENCHMARK_PRED_ROOT="$script_dir/pred"
+export SUBVEC=4
+export SUBBITS=8
 
 for model in "${models[@]}"; do
     case "$model" in

@@ -19,25 +19,24 @@ MODELS=(
 )
 
 METHODS=(
-  # full_attention
-  topk
+  full_attention
   # h2o
   # keyformer
   snapkv
   streaming
   pyramidkv
-  # headkv
-  # adakv
-  # cakekv
+  headkv
+  adakv
+  cakekv
   # duo-attention
   # flexprefill
   # minference
-  # pqcache
-  # quest
+  pqcache
+  quest
   retroinfer
-  # sparq
+  sparq
   # xattention
-  # clusterkv
+  clusterkv
   # magicpig
 )
 

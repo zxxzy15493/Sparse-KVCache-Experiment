@@ -39,6 +39,8 @@ def initialize_objects(config, model):
     H2DStream = torch.cuda.Stream()
     
     MAX_CPU_IN_USE=int(eval(os.environ.get("MAX_CPU_IN_USE", "48")))
+    if MAX_CPU_IN_USE <= 0:
+        raise ValueError("MAX_CPU_IN_USE must be greater than 0")
     MAX_WORKER_CNT=64
 
     cache_managers = []
@@ -77,12 +79,15 @@ def initialize_objects(config, model):
         cpu_key_bufs += cache_manager.cpu_key_buffers
         offload_events += cache_manager.offload_events
 
-    # Assume that we utilize 64 cpu cores.
     process_cnt = min(config.num_key_value_heads * eval(os.environ.get("SUBVEC", "2")), MAX_WORKER_CNT)
+    if MAX_CPU_IN_USE >= process_cnt:
+        core_per_process = MAX_CPU_IN_USE // process_cnt
+    else:
+        core_per_process = MAX_CPU_IN_USE / process_cnt
     global_compressor = MultiCoreCompressor_v2(cpu_key_bufs,
                                                 offload_events,
                                                 process_cnt = process_cnt,
-                                                core_per_process = MAX_CPU_IN_USE // process_cnt,
+                                                core_per_process = core_per_process,
                                                 max_km_groups=config.num_key_value_heads * eval(os.environ.get("SUBVEC", "2")),
                                                 max_seq_len=config.max_seq_len,
                                                 dim=head_dim // eval(os.environ.get("SUBVEC", "2")),

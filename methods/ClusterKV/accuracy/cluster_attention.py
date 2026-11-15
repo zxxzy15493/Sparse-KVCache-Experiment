@@ -11,10 +11,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from transformers.modeling_utils import PreTrainedModel
-from transformers.models.llama.modeling_llama import (
-    apply_rotary_pos_emb,
-    repeat_kv,
-)
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 from transformers.cache_utils import DynamicCache
 from flash_attn import flash_attn_func 
 
@@ -183,6 +180,45 @@ def repeat_metadata(metadata: torch.Tensor, n_rep: int) -> torch.Tensor:
         return metadata
     metadata = metadata[:, None, :].expand(num_key_value_heads, n_rep, slen)
     return metadata.reshape(num_key_value_heads * n_rep, slen)
+
+
+@torch.no_grad()
+def gather_kv_heads(
+    states: torch.Tensor,
+    indices: torch.Tensor,
+    num_heads: int,
+) -> torch.Tensor:
+    """Gather per-query-head K/V rows straight from the KV heads.
+
+    Query head ``h`` reads KV head ``h // num_key_value_groups``, so the K/V
+    cache never needs to be materialized as ``num_heads`` copies (no
+    ``repeat_kv``).  All query heads of one KV group are gathered from that KV
+    head in a single call; only the selected rows are written out.
+
+    states:  [bsz, num_kv_heads, kv_seq_len, head_dim]
+    indices: [num_heads, total_k]
+    returns: [bsz, num_heads, total_k, head_dim]
+    """
+    bsz, num_kv_heads, kv_seq_len, head_dim = states.shape
+    num_groups = num_heads // num_kv_heads
+    total_k = indices.shape[-1]
+
+    # [num_kv_heads, num_groups * total_k]
+    group_indices = indices.reshape(
+        num_kv_heads,
+        num_groups * total_k,
+    )
+
+    # [bsz, num_kv_heads, num_groups * total_k, head_dim]
+    gather_index = group_indices.unsqueeze(0).unsqueeze(-1).expand(
+        bsz,
+        num_kv_heads,
+        num_groups * total_k,
+        head_dim,
+    )
+
+    gathered = torch.gather(states, dim=2, index=gather_index)
+    return gathered.reshape(bsz, num_heads, total_k, head_dim)
 
 # def build_cluster(prefill_key, nlist, balance, cluster_params, 
 #                   num_key_value_groups, gqa_policy):
@@ -369,7 +405,8 @@ def build_cluster(
         prefill_key: [1, num_kv_heads, prefill_len, head_dim]
 
     Outputs:
-        key_centroids:       [1, num_heads or num_kv_heads, nlist, head_dim]
+        key_centroids:       [1, num_kv_heads, nlist, head_dim]
+                             (per KV head, never repeated with repeat_kv)
         cluster_key_indices: [num_kv_heads, prefill_len]
         cluster_key_ptr:     [num_heads or num_kv_heads, prefill_len]
         cluster_key_size:    [num_heads or num_kv_heads, nlist]
@@ -466,12 +503,14 @@ def build_cluster(
     key_centroids = centroids.to(prefill_key.dtype).unsqueeze(0)
 
     # ------------------------------------------------------------
-    # GQA repeat
-    # keep consistent with the original version
+    # GQA metadata
+    #
+    # key_centroids stay per KV head: a query head scores against the
+    # centroids of its own KV group (see cluster_attn_out).  Only the compact
+    # per-token metadata is repeated per query head, which keeps the per-head
+    # cluster selection.
     # ------------------------------------------------------------
     if gqa_policy is None:
-        key_centroids = repeat_kv(key_centroids, num_key_value_groups)
-
         cluster_key_ptr = repeat_metadata(
             cluster_key_ptr,
             num_key_value_groups,
@@ -533,13 +572,16 @@ def cluster_attn_out(
     Optimized cluster attention for decode.
 
     query_states:        [bsz, num_heads, q_len, head_dim]
-    key_states:          [bsz, num_heads, kv_seq_len, head_dim]
-                         Note: this version assumes key_states / value_states have
-                         already been repeat_kv'd to num_heads.
-                         To further optimize, remove repeat_kv in forward_cluster,
-                         but that requires a separate gather-logic change.
-    value_states:        [bsz, num_heads, kv_seq_len, head_dim]
-    key_centroids:       [1, num_heads, nlist, head_dim]
+    key_states:          [bsz, num_kv_heads, kv_seq_len, head_dim]
+                         or [bsz, num_heads, kv_seq_len, head_dim] when the
+                         model already expanded the KV heads (e.g. the GLM
+                         path).  KV heads are not repeated with repeat_kv:
+                         the per-head gather below reads each KV group in
+                         place and only materializes the selected rows.
+    value_states:        [bsz, num_kv_heads, kv_seq_len, head_dim]
+                         or [bsz, num_heads, kv_seq_len, head_dim]
+    key_centroids:       [1, num_kv_heads, nlist, head_dim]
+                         or [1, num_heads, nlist, head_dim]
     cluster_key_indices: [num_kv_heads, prefill_len_without_sink]
                          or [num_heads, prefill_len_without_sink]
     cluster_key_size:    [num_heads, nlist]
@@ -584,11 +626,33 @@ def cluster_attn_out(
     # New:
     #   topk, take only the top max_search_clusters clusters
     # ------------------------------------------------------------
-    # c_dist: [1, num_heads, 1, nlist]
-    c_dist = torch.matmul(
-        query_states,
-        key_centroids.transpose(2, 3),
-    )
+    if key_centroids.shape[1] == num_heads:
+        # c_dist: [1, num_heads, 1, nlist]
+        c_dist = torch.matmul(
+            query_states,
+            key_centroids.transpose(2, 3),
+        )
+    else:
+        # GQA: key_centroids are stored per KV head.  Score every query head
+        # against the centroids of its KV group without materializing
+        # num_heads centroid copies.
+        num_kv_heads = key_centroids.shape[1]
+        num_groups = num_heads // num_kv_heads
+
+        # [1, num_kv_heads, num_groups, q_len, head_dim]
+        grouped_query = query_states.reshape(
+            bsz,
+            num_kv_heads,
+            num_groups,
+            q_len,
+            head_dim,
+        )
+
+        # [1, num_heads, q_len, nlist]
+        c_dist = torch.matmul(
+            grouped_query,
+            key_centroids.unsqueeze(2).transpose(-1, -2),
+        ).reshape(bsz, num_heads, q_len, nlist)
 
     # c_neighbor: [1, num_heads, 1, max_search_clusters]
     _, c_neighbor = torch.topk(
@@ -854,28 +918,46 @@ def cluster_attn_out(
 
     # ------------------------------------------------------------
     # 5. single gather of K/V
+    #
+    # key_states / value_states either carry one head per query head already
+    # (e.g. the GLM path) or stay at num_kv_heads.  In the GQA case the gather
+    # reads each KV group in place instead of repeating the KV cache to
+    # num_heads first.
     # ------------------------------------------------------------
-    gather_index = full_indices.view(
-        1,
-        num_heads,
-        total_k,
-        1,
-    ).expand(
-        bsz,
-        num_heads,
-        total_k,
-        head_dim,
-    )
+    if num_kv_or_heads == num_heads:
+        gather_index = full_indices.view(
+            1,
+            num_heads,
+            total_k,
+            1,
+        ).expand(
+            bsz,
+            num_heads,
+            total_k,
+            head_dim,
+        )
 
-    sel_key_states = key_states.gather(
-        dim=2,
-        index=gather_index,
-    )
+        sel_key_states = key_states.gather(
+            dim=2,
+            index=gather_index,
+        )
 
-    sel_value_states = value_states.gather(
-        dim=2,
-        index=gather_index,
-    )
+        sel_value_states = value_states.gather(
+            dim=2,
+            index=gather_index,
+        )
+    else:
+        sel_key_states = gather_kv_heads(
+            key_states,
+            full_indices,
+            num_heads,
+        )
+
+        sel_value_states = gather_kv_heads(
+            value_states,
+            full_indices,
+            num_heads,
+        )
 
     # ------------------------------------------------------------
     # 6. attention with flash_attn
@@ -1198,8 +1280,9 @@ def forward_cluster(
             key_states, value_states, self.layer_id, cache_kwargs
         )
 
-    key_states = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
+    # key_states / value_states stay at num_key_value_heads: cluster_attn_out
+    # gathers the selected rows per query head without repeat_kv, so the KV
+    # cache is never materialized as num_heads copies.
 
     token_budget = min(self.prompt_len, self.token_budget)
     attn_output = cluster_attn_out(

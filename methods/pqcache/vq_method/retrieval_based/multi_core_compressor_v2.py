@@ -117,19 +117,27 @@ def compute_kmeans_worker(
         time_value: Value,
         profiling_sync: Value
 ):  
-    cpu_num = mp.cpu_count()
     cur_pid = os.getpid()
+    available_cpu_ids = sorted(os.sched_getaffinity(cur_pid))
+    if not available_cpu_ids:
+        raise RuntimeError("No CPUs are available to the KMeans worker")
+
     if n_core >= 1:
         cpu_use = int(n_core)
         if idx == -1:
-            os.sched_setaffinity(cur_pid, list(range(cpu_num))[-2:-1])
+            sync_cpu_ids = available_cpu_ids[-2:-1] or available_cpu_ids[-1:]
+            os.sched_setaffinity(cur_pid, sync_cpu_ids)
         else:
-            os.sched_setaffinity(cur_pid, list(range(cpu_num))[core_offset + cpu_use * (idx+1) : core_offset + cpu_use * (idx+2)])
+            start_idx = core_offset + cpu_use * (idx + 1)
+            worker_cpu_ids = [
+                available_cpu_ids[(start_idx + offset) % len(available_cpu_ids)]
+                for offset in range(cpu_use)
+            ]
+            os.sched_setaffinity(cur_pid, worker_cpu_ids)
     else:
-        assert int(n_core * task_cnt) == 1, f"{n_core},{task_cnt}"
         cpu_use = 1
-        core_idx = math.floor(n_core*idx)
-        os.sched_setaffinity(cur_pid, list(range(cpu_num))[core_idx:core_idx + 1])
+        core_idx = (core_offset + math.floor(n_core * idx)) % len(available_cpu_ids)
+        os.sched_setaffinity(cur_pid, [available_cpu_ids[core_idx]])
     # if n_core >= 1:
     #     cpu_use = int(n_core)
     #     if idx == -1:
@@ -372,13 +380,20 @@ class MultiCoreCompressor_v2:
         else:
             cfg = dict()
         
+        core_per_process_key = (
+            str(int(core_per_process))
+            if float(core_per_process).is_integer()
+            else f"{core_per_process:.2f}"
+        )
+        config_key = f"{dim}_{max_cent_cnt}_{core_per_process_key}"
+
         try:
-            self.kmeans_coef = cfg[f"{dim}_{max_cent_cnt}_{core_per_process}"]
+            self.kmeans_coef = cfg[config_key]
             print(f"KMeans coef is {self.kmeans_coef}. If you are running this system in a new hardware environment, please generate a new configuration file")
         except:
             self.regress_kmeans_time(self.cent_cnt)
             print(f"KMeans coef is {self.kmeans_coef}. New cluster coef has been archived.")
-            cfg[f"{dim}_{max_cent_cnt}_{core_per_process}"] = {
+            cfg[config_key] = {
                                                             "3_iter":self.iter_3_coef.tolist(), 
                                                             "per_iter":self.per_iter_coef.tolist()
                                                         }
