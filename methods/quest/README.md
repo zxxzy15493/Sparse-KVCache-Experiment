@@ -73,6 +73,13 @@ bash scripts/ppl_eval.sh
 ```
 
 ## Efficiency Evaluation
+The unified `quest` loader selects CUDA implementations with
+`--efficiency-backend` and `kernel_backend` in `method_configs/quest.yaml`.
+`single` selects the original batch-size-1 kernel; `batch` selects the
+original-style native batched kernel; `auto` selects according to batch size.
+The native batch source lives in `quest/native_batch` and `quest/ops/native_batch`,
+with a standalone model benchmark in `scripts/bench_native_batch.py`.
+
 Kernels and end-to-end effiency are evaluated on NVIDIA Ada6000 and RTX4090 GPUs with CUDA version of 12.4. We provide several scripts to reproduce our results in the paper:
 
 ### Kernel-level Efficiency

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from importlib import import_module
 from argparse import Namespace
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def _build_method_args(args) -> Namespace:
         page_size=None,
         dtype="bfloat16",
         model_type="auto",
+        kernel_backend="auto",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         attn_implementation="flash_attention_2",
@@ -33,6 +35,10 @@ def _build_method_args(args) -> Namespace:
         setattr(method_args, key, value)
     for key, value in parse_set(args.set, args.method).items():
         setattr(method_args, key, value)
+
+    if method_args.kernel_backend not in ("auto", "single", "batch"):
+        raise ValueError("Quest kernel_backend must be auto, single or batch; "
+                         f"got {method_args.kernel_backend!r}")
 
     method_args.budget = int(method_args.budget)
     if method_args.budget <= 0:
@@ -56,30 +62,68 @@ def _build_method_args(args) -> Namespace:
     return method_args
 
 
+def _resolve_kernel_backend(kernel_backend, batch_size):
+    """Resolve an explicit backend without silently falling back to another."""
+    if kernel_backend not in ("auto", "single", "batch"):
+        raise ValueError("Quest kernel_backend must be auto, single or batch; "
+                         f"got {kernel_backend!r}")
+    if batch_size < 1:
+        raise ValueError(f"Quest batch_size must be positive, got {batch_size}")
+    if kernel_backend == "auto":
+        return "single" if batch_size == 1 else "batch"
+    if kernel_backend == "single" and batch_size != 1:
+        raise ValueError("Quest kernel_backend=single requires batch_size=1; "
+                         f"got {batch_size}. Select batch or auto for multiple requests.")
+    return kernel_backend
+
+
 def _load_efficiency_model(args, method_args, path):
-    """Load Quest's paged-KV model used by its own efficiency benchmark."""
-    if "llama" in method_args.model_name.lower():
+    """Load the selected original single-request or native batch Quest backend."""
+    from transformers import AutoConfig
+
+    batch_size = int(getattr(args, "batch_size", 1))
+    backend = _resolve_kernel_backend(method_args.kernel_backend, batch_size)
+    config = AutoConfig.from_pretrained(path)
+    if config.model_type != "llama":
+        raise ValueError("Quest kernel efficiency backends currently support Llama only")
+    if backend == "single":
+        try:
+            import_module("quest._kernels")
+        except (ImportError, OSError) as error:
+            raise RuntimeError(
+                "Quest selected kernel_backend=single, which requires a loadable quest._kernels "
+                "extension. Compile/install it for the active environment, or explicitly set "
+                "kernel_backend=batch."
+            ) from error
+        # The original RAFT TopK wrapper instantiates exactly 32 rows.
+        if config.num_attention_heads != 32:
+            raise ValueError("Original Quest TopK requires 32 query heads; "
+                             "select kernel_backend=batch for other head counts")
         from quest.models.myllama import LlamaForCausalLM as QuestForCausalLM
-    elif "qwen" in method_args.model_name.lower():
-        from quest.models.qwen2 import Qwen2ForCausalLM as QuestForCausalLM
     else:
-        raise ValueError(f"Quest efficiency backend does not support model '{args.model}'")
+        from quest.native_batch import NativeBatchLlamaForCausalLM as QuestForCausalLM
+
     device = torch.device(args.device)
     model = QuestForCausalLM.from_pretrained(
-        path, torch_dtype=torch.float16, low_cpu_mem_usage=True,
-    ).to(device).eval()
-    model.quest_init(
+        path, config=config, dtype=torch.float16, low_cpu_mem_usage=True,
+        attn_implementation="eager", device_map=device,
+    ).eval()
+    init_kwargs = dict(
         page_size=method_args.page_size,
-        max_seq_len=int(args.max_seq_length) + int(args.fixed_output_length) + 512,
+        max_seq_len=int(args.max_seq_length) + int(args.fixed_output_length),
         token_budget=method_args.token_budget,
-        dtype=torch.float16,
-        device=device,
     )
+    if backend == "single":
+        init_kwargs.update(dtype=torch.float16, device=device)
+    else:
+        init_kwargs["batch_size"] = batch_size
+    model.quest_init(**init_kwargs)
+    method_args.resolved_kernel_backend = backend
     return model
 
 
 def load_model_and_tokenizer(args):
-    """Load a Hugging Face model and attach the evaluation Quest attention patch."""
+    """Load evaluation Quest, or a selected kernel backend with --efficiency-backend."""
     quest_root = Path(__file__).resolve().parents[1] / "methods" / "quest"
     if str(quest_root) not in sys.path:
         sys.path.insert(0, str(quest_root))
@@ -94,9 +138,15 @@ def load_model_and_tokenizer(args):
 
     if getattr(args, "efficiency_backend", False):
         model = _load_efficiency_model(args, method_args, path)
+        method_args.dtype = "float16"
         args._method_args = method_args
-        args._quest_model_type = "efficiency"
-        args._cleanup = None
+        args._quest_kernel_backend = method_args.resolved_kernel_backend
+        args._quest_model_type = ("original_kernel" if args._quest_kernel_backend == "single"
+                                  else "native_batch")
+        args._cleanup = model.quest_clear
+        print(f"Quest efficiency backend: requested={method_args.kernel_backend}, "
+              f"selected={args._quest_kernel_backend}, batch={getattr(args, 'batch_size', 1)}, "
+              f"budget={method_args.token_budget}, page_size={method_args.page_size}", flush=True)
         return model, tokenizer
 
     model_name = str(getattr(method_args, "model_name", args.model))

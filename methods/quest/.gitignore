@@ -183,3 +183,6 @@ evaluation/passkey/results
 evaluation/pg19/results
 
 *.egg-info/
+
+# Local batched CUDA extension build products
+/kernels/batchs/

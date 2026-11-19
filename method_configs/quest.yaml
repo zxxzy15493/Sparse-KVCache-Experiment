@@ -1,2 +1,6 @@
 budget: 1024
 chunk_size: 16
+# auto selects the original kernel at batch=1 and the native batch kernel otherwise.
+# Use single or batch to select an explicit backend.
+kernel_backend: batch
+#kernel_backend: single

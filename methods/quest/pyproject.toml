@@ -12,3 +12,9 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.package-data]
+quest = ["ops/native_batch/CMakeLists.txt",
+         "ops/native_batch/csrc/*.cpp", "ops/native_batch/csrc/*.cu",
+         "ops/native_batch/csrc/*.h", "ops/native_batch/include/decode/*.cuh",
+         "ops/native_batch/include/prefill/*.cuh", "ops/native_batch/include/topk/*.cuh"]
