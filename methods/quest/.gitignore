@@ -186,3 +186,7 @@ evaluation/pg19/results
 
 # Local batched CUDA extension build products
 /kernels/batchs/
+
+# Local CUDA dependency cache and reproducibility build products
+/kernels/cpm_cache/
+/quest/ops/build_repro/
