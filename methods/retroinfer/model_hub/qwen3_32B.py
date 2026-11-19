@@ -9,7 +9,6 @@ operations locally.
 
 import gc
 import json
-import math
 import os
 
 import flashinfer
@@ -157,10 +156,8 @@ class Qwen3Model(LLM):
         self.yarn_factor = rope_scaling.get("factor", 1)
         # 保留入口或 checkpoint 明确指定的 RoPE；仅在未指定时自动扩展。
         if not rope_scaling and self.max_length > self.original_max_position_embeddings:
-            # 未显式指定 RoPE 时，按 checkpoint 的原始窗口扩展到请求上下文。
-            self.yarn_factor = math.ceil(
-                self.max_length / self.original_max_position_embeddings
-            )
+            # 用连续倍率扩展到实际长度，避免刚超过窗口就把 RoPE 扩大一整倍。
+            self.yarn_factor = self.max_length / self.original_max_position_embeddings
             self.config.rope_scaling = {
                 "rope_type": "yarn",
                 "factor": float(self.yarn_factor),

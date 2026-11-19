@@ -275,8 +275,8 @@ def qwen2_flash_attn2_forward_PyramidKV(
 
     # KV cache stores unrepeated (4-head) tensors to save 8x memory
     cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-    if past_key_value is not None and key_states.shape[-2] == kv_seq_len:
-        self.kv_seq_len = kv_seq_len
+    if past_key_value is not None and past_key_value.get_seq_length(self.layer_idx) == 0:
+        self.kv_seq_len = key_states.shape[-2]
         key_states_compress, value_states_compress = self.kv_cluster.update_kv(
             key_states,
             query_states,

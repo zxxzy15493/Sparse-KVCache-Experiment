@@ -1,10 +1,12 @@
-"""Equal-length batched Llama using Quest's original native operator pipeline."""
+"""使用 Quest 原生算子实现等长批处理。"""
 
 import torch
 from torch import nn
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.modeling_llama import LlamaPreTrainedModel
+from transformers.models.qwen2.modeling_qwen2 import Qwen2PreTrainedModel
+from transformers.models.qwen3.modeling_qwen3 import Qwen3PreTrainedModel
 
 from .controller import NativeBatchController
 from .ops import rms_norm
@@ -32,6 +34,9 @@ class NativeAttention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_size, self.kv_heads * self.dim, bias=bias)
         self.v_proj = nn.Linear(config.hidden_size, self.kv_heads * self.dim, bias=bias)
         self.o_proj = nn.Linear(self.q_heads * self.dim, config.hidden_size, bias=bias)
+        if config.model_type == 'qwen3':
+            self.q_norm = NativeRMSNorm(self.dim, config.rms_norm_eps)
+            self.k_norm = NativeRMSNorm(self.dim, config.rms_norm_eps)
         self.rope_theta = config.rope_theta
         self.rope_scale = (config.rope_scaling or {}).get('factor', 1.0)
 
@@ -40,6 +45,9 @@ class NativeAttention(nn.Module):
         q = self.q_proj(x).view(batch, length, self.q_heads, self.dim)
         k = self.k_proj(x).view(batch, length, self.kv_heads, self.dim)
         v = self.v_proj(x).view(batch, length, self.kv_heads, self.dim)
+        if hasattr(self, 'q_norm'):
+            q = self.q_norm(q.flatten(1, 2)).view(batch, length, self.q_heads, self.dim)
+            k = self.k_norm(k.flatten(1, 2)).view(batch, length, self.kv_heads, self.dim)
         if controller.q_heads != self.q_heads:
             # Keep the original native GQA group sizes while preserving head order.
             group = self.q_heads // self.kv_heads
@@ -96,21 +104,13 @@ class NativeLlamaBody(nn.Module):
         self.norm = NativeRMSNorm(config.hidden_size, config.rms_norm_eps)
 
 
-class NativeBatchLlamaForCausalLM(LlamaPreTrainedModel):
-    """Inference-only native Quest model; one controller owns every layer's cache.
-
-    Call quest_init after loading FP16 weights onto one CUDA device. Each request
-    may contain different tokens, but all requests must have the same length.
-    The default legacy head selection retains original Quest GQA semantics.
-    """
-
+class _NativeBatchCausalLM:
     _tied_weights_keys = ['lm_head.weight']
     _supports_sdpa = False
 
-    def __init__(self, config):
-        super().__init__(config)
-        if config.model_type != 'llama' or getattr(config, 'pretraining_tp', 1) != 1:
-            raise ValueError('Native batched Quest currently supports Llama with pretraining_tp=1')
+    def _initialize_native_model(self, config):
+        if getattr(config, 'pretraining_tp', 1) != 1:
+            raise ValueError('Native batched Quest requires pretraining_tp=1')
         self.model = NativeLlamaBody(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.controller = None
@@ -199,3 +199,27 @@ class NativeBatchLlamaForCausalLM(LlamaPreTrainedModel):
         if decode_hook is not None:
             decode_hook()
         return torch.cat(tokens, dim=1)
+
+
+class NativeBatchLlamaForCausalLM(_NativeBatchCausalLM, LlamaPreTrainedModel):
+    """Llama 检查点的 Quest 原生推理模型。"""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self._initialize_native_model(config)
+
+
+class NativeBatchQwen2ForCausalLM(_NativeBatchCausalLM, Qwen2PreTrainedModel):
+    """Qwen2 和 Qwen2.5 检查点的 Quest 原生推理模型。"""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self._initialize_native_model(config)
+
+
+class NativeBatchQwen3ForCausalLM(_NativeBatchCausalLM, Qwen3PreTrainedModel):
+    """稠密 Qwen3 检查点的 Quest 原生推理模型。"""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self._initialize_native_model(config)

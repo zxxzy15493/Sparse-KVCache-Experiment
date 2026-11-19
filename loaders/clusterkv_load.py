@@ -12,14 +12,22 @@ from loaders.chunked_post_ffn import enable_chunked_post_ffn
 
 def _load_efficiency_model(args, cluster_args, path, device):
     """Load ClusterKV's kernel-cache model used by its own efficiency benchmark."""
-    if "llama" in cluster_args.model:
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(path, trust_remote_code=True)
+    if config.model_type == "llama":
         from clusterkv.clusterkv_models.llama import LlamaForCausalLM as ClusterKVForCausalLM
-    elif "qwen" in cluster_args.model:
+    elif config.model_type == "qwen2":
         from clusterkv.clusterkv_models.myqwen2 import Qwen2ForCausalLM as ClusterKVForCausalLM
+    elif config.model_type == "qwen3":
+        from clusterkv.clusterkv_models.myqwen3 import Qwen3ForCausalLM as ClusterKVForCausalLM
     else:
-        raise ValueError(f"ClusterKV efficiency backend does not support model '{args.model}'")
+        raise ValueError(
+            f"ClusterKV efficiency backend does not support "
+            f"model_type={config.model_type!r} ({args.model})"
+        )
     model = ClusterKVForCausalLM.from_pretrained(
-        path, torch_dtype=torch.float16, low_cpu_mem_usage=True,
+        path, config=config, torch_dtype=torch.float16, low_cpu_mem_usage=True,
     ).to(device).eval()
     model.clusterkv_init(
         nlist=cluster_args.nlist,

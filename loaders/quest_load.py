@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from importlib import import_module
 from argparse import Namespace
 from pathlib import Path
 
@@ -84,24 +83,26 @@ def _load_efficiency_model(args, method_args, path):
     batch_size = int(getattr(args, "batch_size", 1))
     backend = _resolve_kernel_backend(method_args.kernel_backend, batch_size)
     config = AutoConfig.from_pretrained(path)
-    if config.model_type != "llama":
-        raise ValueError("Quest kernel efficiency backends currently support Llama only")
     if backend == "single":
-        try:
-            import_module("quest._kernels")
-        except (ImportError, OSError) as error:
-            raise RuntimeError(
-                "Quest selected kernel_backend=single, which requires a loadable quest._kernels "
-                "extension. Compile/install it for the active environment, or explicitly set "
-                "kernel_backend=batch."
-            ) from error
-        # The original RAFT TopK wrapper instantiates exactly 32 rows.
-        if config.num_attention_heads != 32:
-            raise ValueError("Original Quest TopK requires 32 query heads; "
-                             "select kernel_backend=batch for other head counts")
-        from quest.models.myllama import LlamaForCausalLM as QuestForCausalLM
+        if config.model_type == "qwen3":
+            raise ValueError("Quest Qwen3 adapter requires kernel_backend=batch")
+        if config.model_type == "llama":
+            from quest.models.myllama import LlamaForCausalLM as QuestForCausalLM
+        else:
+            from quest.models.qwen2 import Qwen2ForCausalLM as QuestForCausalLM
     else:
-        from quest.native_batch import NativeBatchLlamaForCausalLM as QuestForCausalLM
+        from quest.native_batch import (
+            NativeBatchLlamaForCausalLM,
+            NativeBatchQwen2ForCausalLM,
+            NativeBatchQwen3ForCausalLM,
+        )
+
+        model_classes = {
+            "llama": NativeBatchLlamaForCausalLM,
+            "qwen2": NativeBatchQwen2ForCausalLM,
+            "qwen3": NativeBatchQwen3ForCausalLM,
+        }
+        QuestForCausalLM = model_classes[config.model_type]
 
     device = torch.device(args.device)
     model = QuestForCausalLM.from_pretrained(

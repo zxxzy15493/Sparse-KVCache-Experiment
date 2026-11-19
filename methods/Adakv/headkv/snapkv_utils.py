@@ -148,15 +148,16 @@ class DynamicCacheSplitHeadFlatten(Cache):
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
-        if len(self.key_cache) == 0:
+        if layer_idx >= len(self.key_cache) or self.key_cache[layer_idx] is None:
             return 0
         return self._seen_tokens
 
     def get_usable_length(self, new_seq_length: int, layer_idx: Optional[int] = 0) -> int:
         usable_length = self.get_seq_length(layer_idx)
         max_length = self.get_max_cache_shape(layer_idx)
-        if max_length is not None:
-            usable_length = min(usable_length, max_length - new_seq_length)
+        # Transformers 用 -1 表示无容量上限，不能据此生成负的历史长度。
+        if max_length is not None and max_length >= 0:
+            usable_length = max(0, min(usable_length, max_length - new_seq_length))
         return usable_length
 
     def get_max_length(self) -> Optional[int]:

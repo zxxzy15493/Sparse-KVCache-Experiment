@@ -94,7 +94,7 @@ def load_model_and_tokenizer(args):
     if not isinstance(key_size, list):
         key_size = [key_size] * n_layers
 
-    config = CompressConfig(compress=True, cascading=False, cache_size=cache_size, window_size=window_size[0], hyper=[1.0, 1.0, 200.0])
+    config = CompressConfig(compress=True, cascading=True, cache_size=cache_size, window_size=window_size[0], hyper=[1.0, 1.0, 200.0])
     model.config.compress_config = config
     model.config.window_size = window_size
     model.config.key_size = key_size

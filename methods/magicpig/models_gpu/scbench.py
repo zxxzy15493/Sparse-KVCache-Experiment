@@ -41,7 +41,7 @@ class MagicPigGPUSession(ExternalSession):
         try:
             cache = DynamicCache(config=self.model.config)
             if any(layer.is_sliding for layer in cache.layers):
-                raise ValueError("MagicPIG GPU SCBench requires full-context Qwen KV caches")
+                raise ValueError("MagicPIG GPU SCBench requires full-context KV caches")
             self.model.past_key_values = cache
             chunk = self.args.prefill_chunk_size or self.model.chunk_size
             for start in range(0, ids.shape[1], chunk):

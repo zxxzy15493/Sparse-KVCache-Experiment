@@ -341,7 +341,7 @@ def adaptive_qwen2_flash_attn2_forward(
             cache_kwargs["cu_klen"] = self.kv_cluster.cu_klen
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-            self.kv_cluster.klen_sum += self.num_heads
+            self.kv_cluster.klen_sum += bsz * self.num_heads
             self.kv_cluster.max_seqlen_k += 1
             self.kv_cluster.cu_klen += self.kv_cluster.cu_offset
             self.kv_cluster.head_lens += 1
@@ -377,7 +377,8 @@ def adaptive_qwen2_flash_attn2_forward(
                     max_seqlen_k,
                     causal=True,
                 ).reshape(bsz, self.num_heads, q_len, self.head_dim)
-                attn_output = attn_output.transpose(0, 1).reshape(bsz, q_len, self.o_proj.in_features)
+                # varlen 按 [batch, head] 排列，只交换 head 与 query 维。
+                attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.o_proj.in_features)
 
     attn_output = self.o_proj(attn_output)
 

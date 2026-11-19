@@ -87,9 +87,9 @@ fi
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM=false
-if [[ "$method" == "pqcache" ]]; then
-    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-fi
+    if [[ "$method" == "pqcache" ]]; then
+        export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+    fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 benchmark_root=${RULER_BENCHMARK_ROOT:-"$script_dir/benchmark_root"}

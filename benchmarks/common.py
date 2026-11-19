@@ -40,7 +40,7 @@ MODEL_CONTEXT_LENGTHS = {
 }
 METHOD_CONFIG_DIR = ROOT / "method_configs"
 METHODS = ("full_attention", "topk", "topk32", "topp", "topp32", "pqcache", "clusterkv",
-           "h2o", "keyformer", "snapkv", "streaming","quest","sparq","xattention","flexprefill", "minference", "retroinfer", "magicpig",
+           "h2o", "keyformer", "snapkv", "streaming","quest", "sparq","xattention","flexprefill", "minference", "retroinfer", "magicpig",
            "headkv", "adakv", "cakekv", "duo-attention", "pyramidkv")
 PQ_METHODS = frozenset({"topk", "topk32", "topp", "topp32", "pqcache"})
 BASELINE_METHODS = ("full_attention", "topk", "topp")

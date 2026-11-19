@@ -30,6 +30,9 @@ def _get_rotary_embedding_and_apply(model_type: str):
     elif model_type == "qwen2":
         from transformers.models.qwen2.modeling_qwen2 import Qwen2RotaryEmbedding, apply_rotary_pos_emb
         return Qwen2RotaryEmbedding, apply_rotary_pos_emb
+    elif model_type == "qwen3":
+        from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding, apply_rotary_pos_emb
+        return Qwen3RotaryEmbedding, apply_rotary_pos_emb
     else:
         # default to Llama
         from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, apply_rotary_pos_emb
@@ -55,15 +58,15 @@ class ClusterKVAttention(nn.Module):
         self.attention_bias = getattr(config, "attention_bias", config.model_type == "qwen2")
         self.is_causal = True
 
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=self.attention_bias)
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=self.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=self.attention_bias)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=self.attention_bias)
+        if config.model_type == "qwen3":
+            from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+
+            self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self._init_rope()
 
     def _init_rope(self):
@@ -540,6 +543,10 @@ class ClusterKVAttention(nn.Module):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         )
 
+        if hasattr(self, "q_norm"):
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
+
         torch.cuda.nvtx.range_push("RoPE")
 
         if position_embeddings is None:
@@ -598,7 +605,9 @@ class ClusterKVAttention(nn.Module):
                     f" {attn_output.size()}"
                 )
             self._timer_begin(q_len, "post_ffn")
-            attn_output = attn_output.reshape(bsz, q_len, self.hidden_size).contiguous()
+            attn_output = attn_output.reshape(
+                bsz, q_len, self.num_heads * self.head_dim
+            ).contiguous()
             torch.cuda.nvtx.range_push("o_proj")
             if self.pretraining_tp > 1:
                 attn_output = attn_output.split(self.hidden_size // self.pretraining_tp, dim=2)

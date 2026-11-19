@@ -1,8 +1,8 @@
 """MagicPIG attention adapted from MagicPIG/models/hf/qwen.py.
 
-Uses native Transformers Qwen2/Qwen3 models and caches; no FlashInfer,
-LSH extension, or AVX-512 CPU kernel is imported. Padding is excluded from
-historical-key statistics and each request retains its own sink/window.
+Uses native Transformers Llama, Qwen2 and Qwen3 models and caches.
+Padding is excluded from historical-key statistics and each request retains
+its own sink/window.
 """
 
 import torch
@@ -20,7 +20,7 @@ class MagicPIGState:
         self.sink_tokens = int(sink_tokens)
         self.window = int(window)
         if not 0 <= K <= 31 or L < 1 or self.sink_tokens < 0 or self.window < 0:
-            raise ValueError("Qwen MagicPIG requires 0 <= K <= 31, L >= 1, S >= 0 and W >= 0")
+            raise ValueError("MagicPIG requires 0 <= K <= 31, L >= 1, S >= 0 and W >= 0")
         self.hash_dtype = torch.uint8 if K <= 8 else torch.int16 if K <= 15 else torch.int32
         self.reset()
 
@@ -171,15 +171,18 @@ def magicpig_attention_forward(module, query, key, value, attention_mask,
     return output.reshape(batch, query_heads, 1, head_dim).transpose(1, 2).contiguous(), None
 
 
-def register_qwen_magicpig():
-    name = "magicpig_gpu_qwen"
+def register_magicpig():
+    name = "magicpig_gpu"
     AttentionInterface.register(name, magicpig_attention_forward)
     AttentionMaskInterface.register(name, sdpa_mask)
     return name
 
 
-def configure_qwen_magicpig(model, K, L, sink_tokens, window):
+def configure_magicpig(model, K, L, sink_tokens, window):
     manager = MagicPIGState(K, L, sink_tokens, window)
     for layer in model.model.layers:
         layer.self_attn.magicpig_state = manager
     return manager
+
+
+configure_qwen_magicpig = configure_magicpig

@@ -189,9 +189,9 @@ def llama_attn_forward_PyramidKV(
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
 
-        if key_states.shape[-2] == kv_seq_len:
+        if past_key_value.get_seq_length(self.layer_idx) == 0:
             # ── prefill ──
-            self.kv_seq_len = kv_seq_len
+            self.kv_seq_len = key_states.shape[-2]
             key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, tm=tm)
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)
@@ -393,9 +393,9 @@ def llama_flash_attn2_forward_PyramidKV(
         #         print(f"past_key_value.key_cache[{index}] {past_key_value.key_cache[index].device}")
         #         print(f"past_key_value.value_cache[{index}] {past_key_value.value_cache[index].device}")
 
-        if key_states.shape[-2] == kv_seq_len:
+        if past_key_value.get_seq_length(self.layer_idx) == 0:
             # ── prefill ──
-            self.kv_seq_len = kv_seq_len
+            self.kv_seq_len = key_states.shape[-2]
             key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, tm=tm)
             if tm is not None:
                 tm.record_write_cache_start(self.layer_idx)

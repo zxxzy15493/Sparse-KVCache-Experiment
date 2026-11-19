@@ -92,15 +92,9 @@ def load_model_and_tokenizer(args):
     backend = "models_single (CPU LSH + GPU)" if use_cpu_backend else "models_gpu (HF GPU Mask)"
     print(f"run {args.dataset}, use K = {K}, L = {L} on {args.model_path}, backend = {backend}")
     if not use_cpu_backend:
-        if 'qwen' not in args.model_path.lower():
-            raise ValueError(
-                "MagicPig models_gpu currently supports dense Qwen2/Qwen3, including "
-                "Qwen/Qwen2.5-7B-Instruct-1M. This CPU lacks AVX-512F; "
-                f"the models_single backend cannot load {args.model_path!r}."
-            )
-        # Never import models_single or its AVX-512 extensions on this path.
-        from models_gpu.qwen import Qwen2Model
-        llm = Qwen2Model(
+        from models_gpu.model import MagicPigGPUModel
+
+        llm = MagicPigGPUModel(
             model_name=args.model_path, K=K, L=L, batch_size=batch_size,
             generation_buffer=generation_buffer, max_length=max_len,
             device=getattr(args, "device", "cuda:0"), dtype=torch.bfloat16,

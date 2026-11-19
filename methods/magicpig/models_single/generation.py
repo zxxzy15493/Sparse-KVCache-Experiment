@@ -1,6 +1,7 @@
 """Shared greedy generation: per-request prefill followed by batched decode."""
 
 import time
+from contextlib import ExitStack, nullcontext
 
 import torch
 
@@ -87,10 +88,15 @@ def generate_batch(model, input_ids, max_tokens=128, attention_mask=None,
     output[:, :prefix_width] = input_ids
     model.generate_token = 0
     model.prefill_latency = model.decode_latency = model.TPOT = 0.0
+    # benchmark 按一次前向加 argmax 计时；普通调用使用空 context。
+    step_context = getattr(model, "_efficiency_step_context", nullcontext)
+    decode_start_callback = getattr(model, "_efficiency_decode_start_callback", None)
+    timing = ExitStack()
 
     try:
         if max_tokens:
             _synchronize(model)
+            timing.enter_context(step_context())
             start = time.perf_counter()
             # Scratch KV/hash buffers are reused only after the previous
             # request has been copied into its own CPU and GPU cache slots.
@@ -104,6 +110,9 @@ def generate_batch(model, input_ids, max_tokens=128, attention_mask=None,
             positions = lengths[:, None]
             for step in range(max_tokens):
                 next_tokens = logits.argmax(dim=-1).reshape(batch_size, 1)
+                timing.close()
+                if step == 0 and decode_start_callback is not None:
+                    decode_start_callback()
                 if not fixed_length:
                     next_tokens = next_tokens.masked_fill(finished[:, None], pad_token_id)
                 output[:, prefix_width + step] = next_tokens[:, 0]
@@ -113,7 +122,9 @@ def generate_batch(model, input_ids, max_tokens=128, attention_mask=None,
                     if finished.all():
                         break
                 if step + 1 < max_tokens:
-                    logits = model.inference(input_ids=next_tokens, position_ids=positions + step)
+                    position_ids = positions + step
+                    timing.enter_context(step_context())
+                    logits = model.inference(input_ids=next_tokens, position_ids=position_ids)
             _synchronize(model)
             model.decode_latency = time.perf_counter() - start
             model.TPOT = model.decode_latency / max(1, model.generate_token - 1) * 1000
@@ -121,5 +132,6 @@ def generate_batch(model, input_ids, max_tokens=128, attention_mask=None,
         output = output[:, :prefix_width + model.generate_token]
         return output[0].tolist() if batch_size == 1 else output
     finally:
+        timing.close()
         # A failed prefill/decode must not contaminate the next benchmark batch.
         model.clear()

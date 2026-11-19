@@ -50,6 +50,14 @@ def parse_args():
     parser.add_argument("--save_steps", type=int, default=50)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--activation_offload", action="store_true",
+        help="Offload decoder checkpoint inputs to CPU pinned memory",
+    )
+    parser.add_argument(
+        "--ffn_chunk_size", type=int, default=0,
+        help="Qwen3 FFN token chunk size; 0 disables chunking",
+    )
     parser.add_argument("--rope_theta", type=float, default=None)
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument(

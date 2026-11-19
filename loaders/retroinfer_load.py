@@ -2,7 +2,7 @@ import torch
 import sys
 from pathlib import Path
 from types import MethodType
-from benchmarks.common import MODEL_CONTEXT_LENGTHS
+from benchmarks.common import model_context_length
 
 
 def generate(self, *args, **kwargs):
@@ -103,10 +103,11 @@ def load_model_and_tokenizer(args):
 
     from model_hub import LlamaModel, QwenModel, Qwen3Model, GlmModel
     
-    # RetroInfer 的 KV cache 容量要同时容纳输入上下文和生成 token。
-    max_len = MODEL_CONTEXT_LENGTHS[args.model] + int(
-        getattr(args, "fixed_output_length", 0) or 32
-    )
+    # 位置缓存容量需要覆盖本轮 benchmark 的最长输入以及生成 token。
+    # max_seq_length 可能超过模型名义上下文窗口，Qwen3 adapter 会按需扩展 RoPE。
+    requested_max_length = int(getattr(args, "max_seq_length", 0) or 0)
+    max_input_length = max(model_context_length(args.model), requested_max_length)
+    max_len = max_input_length + int(getattr(args, "fixed_output_length", 0) or 32)
 
     model_path_lower = args.model_path.lower()
 

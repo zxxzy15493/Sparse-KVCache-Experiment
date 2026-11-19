@@ -850,7 +850,12 @@ class MyQwen2Model(Qwen2PreTrainedModel):
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # Shared rotary embedding (one instance, used by every layer).
-        self.rotary_emb = Qwen2RotaryEmbedding(config=self.config)
+        if config.model_type == "qwen3":
+            from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding
+
+            self.rotary_emb = Qwen3RotaryEmbedding(config=self.config)
+        else:
+            self.rotary_emb = Qwen2RotaryEmbedding(config=self.config)
 
         # The original ClusterKV controller/cache — allocated by clusterkv_init.
         self.controller: Optional[ClusterKVController] = None

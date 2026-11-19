@@ -12,6 +12,9 @@ DEVICE="${DEVICE:-cuda:0}"
 NUM_SAMPLES="${NUM_SAMPLES:-50}"
 DATA_ROOT="${DATA_ROOT:-$SCRIPT_DIR/benchmark_root/qwen3-32b/synthetic}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$SCRIPT_DIR/benchmark_root_pred/synthetic/qwen3-32b-yarn2}"
+# 64K 及以上的 PQCache 参数，可由外部环境变量覆盖。
+PQCACHE_SUBVEC_64K="${PQCACHE_SUBVEC_64K:-4}"
+PQCACHE_SUBBITS_64K="${PQCACHE_SUBBITS_64K:-8}"
 
 LENGTHS=(4096 8192 16384 32768 65536)
 TASKS=(
@@ -66,7 +69,20 @@ for method in "${METHODS[@]}"; do
   for length in "${LENGTHS[@]}"; do
     index=$((index + 1))
     echo "===== [$index/$total] run: $method / $length ====="
-    if ! "$PYTHON_BIN" "$RUNNER" \
+    env_args=()
+    if [[ "$method" == "pqcache" ]]; then
+      env_args+=(OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}")
+      if [[ "$length" -ge 65536 ]]; then
+        env_args+=(
+          SUBVEC="$PQCACHE_SUBVEC_64K"
+          SUBBITS="$PQCACHE_SUBBITS_64K"
+        )
+        echo "[pqcache] OMP_NUM_THREADS=${OMP_NUM_THREADS:-1} SUBVEC=$PQCACHE_SUBVEC_64K SUBBITS=$PQCACHE_SUBBITS_64K"
+      else
+        echo "[pqcache] OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}"
+      fi
+    fi
+    if ! env "${env_args[@]}" "$PYTHON_BIN" "$RUNNER" \
       --worker \
       --model "$MODEL_ID" \
       --methods "$method" \

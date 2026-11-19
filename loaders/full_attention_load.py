@@ -18,7 +18,8 @@ def load_model_and_tokenizer(args):
         path,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        device_map="auto"
+        device_map="auto",
+        attn_implementation="flash_attention_2",
     )
     model = model.to(torch.device(args.device)).eval()
     enable_chunked_post_ffn(model)

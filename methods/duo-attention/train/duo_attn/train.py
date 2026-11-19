@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import json
+import shutil
 import wandb
 import matplotlib.pyplot as plt
 from duo_attn.utils import (
@@ -36,6 +37,8 @@ from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
 from torch.distributed._tensor import DeviceMesh
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
+    checkpoint_wrapper,
+    offload_wrapper,
 )
 import types
 
@@ -53,8 +56,9 @@ from transformers.models.mistral.modeling_mistral import (
 
 
 def setup():
-    # initialize the process group
-    dist.init_process_group("nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group("nccl", device_id=torch.device("cuda", local_rank))
 
 
 def cleanup():
@@ -87,13 +91,12 @@ def get_modules_to_shard(model_backbone):
         for _ in range(4):
             if current is None:
                 return None
-            if hasattr(current, "module"):
-                current = current.module
-                continue
-            if hasattr(current, "wrapped_module"):
-                current = current.wrapped_module
-                continue
-            break
+            for attribute in ("_checkpoint_wrapped_module", "module", "wrapped_module"):
+                if hasattr(current, attribute):
+                    current = getattr(current, attribute)
+                    break
+            else:
+                break
         return current
 
     def _first_layer_type(container):
@@ -102,7 +105,7 @@ def get_modules_to_shard(model_backbone):
             return None
         try:
             if len(container) > 0:
-                return type(container[0])
+                return type(_unwrap_layers_container(container[0]))
         except TypeError:
             return None
         except Exception:
@@ -124,17 +127,46 @@ def get_modules_to_shard(model_backbone):
     return modules_to_shard
 
 
+def prepare_model_for_training(model, local_rank, world_size, activation_offload=False):
+    """Checkpoint decoder layers and avoid FSDP parameter copies on one GPU."""
+    torch.cuda.set_device(local_rank)
+    modules_to_shard = get_modules_to_shard(model)
+
+    def wrap_decoder(module):
+        wrapped = checkpoint_wrapper(module)
+        # Offload checkpoint inputs; the inner checkpoint discards operator
+        # intermediates so frozen weights are not copied to CPU by this hook.
+        return offload_wrapper(wrapped) if activation_offload else wrapped
+
+    apply_activation_checkpointing(
+        model, checkpoint_wrapper_fn=wrap_decoder,
+        check_fn=lambda module: isinstance(module, tuple(modules_to_shard)),
+    )
+    if world_size == 1:
+        model.to(torch.device("cuda", local_rank))
+        print("Single-GPU training: FSDP disabled")
+    else:
+        apply_fsdp(
+            model, DeviceMesh(device_type="cuda", mesh=list(range(world_size))),
+            MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16),
+            modules_to_shard=modules_to_shard,
+        )
+        print(f"[rank {dist.get_rank()}] FSDP2 + Ulysses training on {world_size} GPUs")
+    print(f"Decoder checkpoint activation offload: {activation_offload}")
+    return model
+
+
 def train(
     args, model, rank, world_size, train_dataloader, optimizer, scheduler, resume_step
 ):
     model.train()
 
     if rank == 0:
-        pbar = tqdm(range(args.num_steps))
+        pbar = tqdm(total=args.num_steps, initial=max(resume_step, 0))
 
     local_rank = int(os.environ["LOCAL_RANK"])
 
-    global_step = 0
+    global_step = max(resume_step, 0)
     local_step = 0
 
     def _maybe_all_reduce_scalar(tensor):
@@ -149,15 +181,6 @@ def train(
         if global_step >= args.num_steps:
             break
         for step, batch in enumerate(train_dataloader):
-            if global_step <= resume_step:
-                global_step += 1
-                if rank == 0:
-                    pbar.update(1)
-                    pbar.set_description(
-                        f"Skipping step {global_step} to resume to {resume_step}"
-                    )
-                continue
-
             @torch.no_grad()
             def clamp_(x, min_val, max_val):
                 x.clamp_(min_val, max_val)
@@ -217,11 +240,6 @@ def train(
                 / global_num_labels
             )
 
-            def _to_local_tensor(tensor):
-                if hasattr(tensor, "to_local"):
-                    return tensor.to_local()
-                return tensor
-
             # Obtain the actual parameter references for full_attention_heads so gradients flow
             full_attention_params = [
                 param
@@ -229,17 +247,22 @@ def train(
                 if "full_attention_heads" in name and param.requires_grad
             ]
 
-            # For visualization / saving, use detached tensors on the appropriate device
+            # Every rank participates in gathering each gate vector. Saving
+            # local shards would silently write only half the heads on 2 GPUs.
+            full_attention_values = [
+                parameter.full_tensor() if hasattr(parameter, "full_tensor") else parameter
+                for parameter in full_attention_params
+            ]
             full_attention_heads = [
-                _to_local_tensor(p).detach().to(original_hidden_states.device)
-                for p in full_attention_params
+                value.detach().to(original_hidden_states.device)
+                for value in full_attention_values
             ]
 
-            # Regularize toward 1.0 for full-attention heads (encourage enabling full attention)
-            # Use the parameter tensors directly (not detached) so gradients propagate
+            # L1 encourages sparse gates. Use the full vectors with autograd
+            # so the regularization scale does not depend on the shard count.
             if len(full_attention_params) > 0:
                 reg_targets = torch.cat(
-                    [_to_local_tensor(p).reshape(-1) for p in full_attention_params]
+                    [value.reshape(-1) for value in full_attention_values]
                 ).float().to(original_hidden_states.device)
                 reg_loss = l1_loss(reg_targets)
             else:
@@ -296,6 +319,14 @@ def train(
             optimizer.zero_grad()
 
             global_step += 1
+            # All-gather after the update: full_tensor() returns a gathered
+            # copy, so the vectors collected for the loss still hold old gates.
+            with torch.no_grad():
+                full_attention_heads = [
+                    (parameter.full_tensor() if hasattr(parameter, "full_tensor") else parameter)
+                    .detach().to(original_hidden_states.device)
+                    for parameter in full_attention_params
+                ]
             if rank == 0:
                 full_attention_heads_list = full_attention_heads_to_list(
                     full_attention_heads
@@ -320,9 +351,13 @@ def train(
                     plt.close(fig)
 
                 pbar.set_description(
-                    f"Len={seq_len}/{global_num_labels}|Dloss={distill_loss.item():.3f}|Rloss={reg_loss.item():.3f}|LR={optimizer.param_groups[0]['lr']:.2e}"
+                    f"Len={seq_len}/{global_num_labels}|Dloss={distill_loss.item():.2e}|Rloss={reg_loss.item():.2f}|LR={optimizer.param_groups[0]['lr']:.2e}"
                 )
                 pbar.update(1)
+            if global_step == max(resume_step, 0) + 1:
+                print(
+                    f"[rank {rank}] First-step GPU peak: {torch.cuda.max_memory_allocated(local_rank) / 1024**3:.2f} GiB"
+                )
 
             if args.output_dir is not None and global_step % args.save_steps == 0:
                 if rank == 0:
@@ -333,9 +368,9 @@ def train(
                             f"full_attention_heads_step={global_step}.tsv",
                         ),
                     )
-                    os.system(f"rm {args.output_dir}/full_attention_heads_latest.tsv")
-                    os.system(
-                        f"cp {args.output_dir}/full_attention_heads_step={global_step}.tsv {args.output_dir}/full_attention_heads_latest.tsv"
+                    shutil.copyfile(
+                        os.path.join(args.output_dir, f"full_attention_heads_step={global_step}.tsv"),
+                        os.path.join(args.output_dir, "full_attention_heads_latest.tsv"),
                     )
 
                 # save scheduler and optimizer state
@@ -351,13 +386,9 @@ def train(
                     ),
                 )
 
-                # copy the full_attention_heads and optimizer_scheduler_state to the latest state, replacing the old one
-                # remove the previous latest state
-                os.system(
-                    f"rm {args.output_dir}/optimizer_scheduler_state_latest-rank={rank}.pt"
-                )
-                os.system(
-                    f"cp {args.output_dir}/optimizer_scheduler_state-step={global_step}-rank={rank}.pt {args.output_dir}/optimizer_scheduler_state_latest-rank={rank}.pt"
+                shutil.copyfile(
+                    os.path.join(args.output_dir, f"optimizer_scheduler_state-step={global_step}-rank={rank}.pt"),
+                    os.path.join(args.output_dir, f"optimizer_scheduler_state_latest-rank={rank}.pt"),
                 )
 
             if global_step >= args.num_steps:
@@ -375,6 +406,7 @@ def main(args):
     local_rank = int(os.environ["LOCAL_RANK"])
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+    torch.cuda.set_device(local_rank)
 
     if rank == 0:
         if args.output_dir is not None:
@@ -442,6 +474,7 @@ def main(args):
         "trust_remote_code": True,
         "torch_dtype": torch.bfloat16,
         "low_cpu_mem_usage": True,
+        "device_map": {"": f"cuda:{local_rank}"},
         "attn_implementation": "eager",
     }
     patched = maybe_patch_chatglm_cache(args.model_name)
@@ -462,6 +495,7 @@ def main(args):
         initial_value=args.initial_value,
         enable_ulysses_attention=True,
         streaming_attn_implementation=args.streaming_attn_implementation,
+        ffn_chunk_size=args.ffn_chunk_size,
     )
 
     model = get_model_backbone(model)
@@ -477,24 +511,11 @@ def main(args):
 
     setup()
 
-    torch.cuda.set_device(local_rank)
-    mp_policy = MixedPrecisionPolicy(
-        param_dtype=torch.bfloat16,
-        reduce_dtype=torch.bfloat16,
+    prepare_model_for_training(
+        model, local_rank, world_size, activation_offload=args.activation_offload,
     )
-
-    model_type = str(getattr(config, "model_type", "")).lower()
-    apply_activation_checkpointing(model)
-
-    # mesh = None
-    mesh = DeviceMesh(device_type="cuda", mesh=[i for i in range(world_size)])
-
-    apply_fsdp(
-        model,
-        mesh,
-        mp_policy,
-        modules_to_shard=get_modules_to_shard(model),
-    )
+    print(f"[rank {rank}] GPU memory after setup: {torch.cuda.memory_allocated(local_rank) / 1024**3:.2f} GiB")
+    torch.cuda.reset_peak_memory_stats(local_rank)
 
     if rank == 0:
         print(model)
@@ -526,7 +547,10 @@ def main(args):
         train_dataset, tokenizer, args.batch_size, shuffle=True
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
+    optimizer = torch.optim.AdamW(
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        lr=args.lr, weight_decay=0.00,
+    )
 
     warmup_steps = max(args.num_steps // 5, 1)
 
@@ -556,10 +580,13 @@ def main(args):
         )
     ):
         # load the latest state in the output_dir
+        # These local optimizer checkpoints contain FSDP DTensor/DeviceMesh
+        # objects when training on multiple GPUs.
         state = torch.load(
             os.path.join(
                 args.output_dir, f"optimizer_scheduler_state_latest-rank={rank}.pt"
-            )
+            ),
+            weights_only=False,
         )
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])

@@ -18,6 +18,7 @@ METHOD_LOADERS = {
     "snapkv": "snapkv_load",
     "streaming": "streaming_load",
     "quest": "quest_load",
+    "quest_native_batch": "quest_native_batch_load",
     "sparq": "sparq_load",
     "xattention": "xattention_load",
     "flexprefill": "flexprefill_load",

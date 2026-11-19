@@ -249,6 +249,11 @@ def write_completed(path: Path, completed: dict[int, dict[str, Any]]) -> None:
 def prediction_dir(args: argparse.Namespace, method: str, length: int) -> Path:
     overrides = default_overrides(method)
     signature = run_name(method, 1024, overrides)
+    # 长上下文 PQCache 的结果按量化参数区分，避免续跑时复用其他配置。
+    if method == "pqcache" and length >= 65536:
+        subvec = os.environ.get("SUBVEC", "2")
+        subbits = os.environ.get("SUBBITS", "6")
+        signature = f"{signature}__subvec-{subvec}__subbits-{subbits}"
     # Include YaRN in the model-root and signature so native-context runs can
     # never be mixed with these predictions.
     return args.output_root / method / f"{signature}__rope-yarn-2.0" / str(length)

@@ -114,6 +114,15 @@ python benchmarks/longbench/longbench_eval.py \
 
 [`benchmarks/ruler/`](benchmarks/ruler/) is a self-contained RULER synthetic-task framework. [`synthetic.yaml`](benchmarks/ruler/synthetic.yaml) defines the synthetic tasks. Data are stored at `benchmark_root/<model>/synthetic/<length>/data` and shared by all methods for the same model. Predictions and their `summary.csv` files are stored at `benchmark_root_pred/synthetic/<model>/<method>/<parameter-signature>/<length>/`; for example, `benchmark_root_pred/synthetic/llama-3.1-8b/streaming/budget-1024/65536/`. Set `RULER_BENCHMARK_ROOT` or `RULER_BENCHMARK_PRED_ROOT` to override the data or prediction root, respectively.
 
+Both roots are gitignored, so a fresh checkout has no synthetic data. Generate only the models, lengths, and tasks a run needs (the shared `<model>` names are the aliases defined in [`benchmarks/common.py`](benchmarks/common.py)):
+
+```bash
+bash benchmarks/ruler/generate_datasets.sh \
+  --models llama-3.1-8b qwen-2.5-7b-1m \
+  --lengths 4096 \
+  --tasks niah_single_1
+```
+
 To customize a RULER run, edit the `models`, `tasks`, `lengths`, and `budgets` arrays in the relevant script under [`method_scripts/`](benchmarks/ruler/method_scripts/). `overview` covers the synthetic tasks and lengths reported in the paper, while `budget` runs the budget study. These names identify the preset script only; the generic `run_experiment.sh` runner accepts a method followed by option flags, then prepares data, predicts, and evaluates in sequence.
 
 ```bash
